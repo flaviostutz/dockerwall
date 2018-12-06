@@ -50,8 +50,9 @@ func main() {
 	}
 
 	swarmWaller := Waller{
-		dockerClient:    cli,
-		gatewayNetworks: gn,
+		dockerClient:       cli,
+		useDefaultNetworks: (*gatewayNetworks == ""),
+		gatewayNetworks:    gn,
 	}
 
 	err = swarmWaller.startup()

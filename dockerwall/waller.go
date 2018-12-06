@@ -10,38 +10,27 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 )
 
 //Waller Label based network filter constraints
 type Waller struct {
-	dockerClient    *client.Client
-	gatewayNetworks []string
+	dockerClient       *client.Client
+	useDefaultNetworks bool
+	gatewayNetworks    []string
 }
 
 func (s *Waller) startup() error {
 	logrus.Infof("Performing initial full filter updates for all current containers")
 
-	if len(s.gatewayNetworks) == 0 {
-		logrus.Debugf("No docker networks were defined. Will use all 'bridge' networks on host")
-		opts := types.NetworkListOptions{
-			Filters: filters.NewArgs(filters.KeyValuePair{Key: "driver", Value: "bridge"}),
-		}
-		bnetworks, err := s.dockerClient.NetworkList(context.Background(), opts)
-		if err != nil {
-			return err
-		}
-		for _, bn := range bnetworks {
-			s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
-		}
-	}
-	logrus.Debugf("Bridge networks that will be managed: %v", s.gatewayNetworks)
-
-	err := s.updateIptablesChains()
+	err := s.initialize()
 	if err != nil {
-		return fmt.Errorf("Error updating iptables basic chains, err=%s", err)
+		return err
 	}
+
+	go s.processDockerEvents()
 
 	for {
 		containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
@@ -64,72 +53,39 @@ func (s *Waller) startup() error {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
-		time.Sleep(10000 * time.Millisecond)
+		time.Sleep(10000000 * time.Millisecond)
 	}
 }
 
-func (s *Waller) removeOrphans(containers []types.Container) error {
-	currentContainers, err := s.containerGwIPs()
-	if err != nil {
-		return err
-	}
-	err = s.removeOrphanRules("DOCKERWALL-ALLOW", currentContainers)
-	if err != nil {
-		return err
-	}
-	err = s.removeOrphanRules("DOCKERWALL-DENY", currentContainers)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]string) error {
-	logrus.Debugf("Retrieving iptables rules for %s", chain)
-	rules, err1 := ExecShellf("iptables -L %s -v --line-number", chain)
-	if err1 != nil {
-		return err1
-	}
-	rul, err2 := linesToArray(rules)
-	if err2 != nil {
-		return err2
-	}
-
-	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst")
-	lineregex, _ := regexp.Compile("^([0-9]+)")
-
-	//invert rules order so that we can remove rules without changing the line numbers
-	rul = reverseArray(rul)
-
-	for _, v := range rul {
-		ss := cidregex.FindStringSubmatch(v)
-		if len(ss) == 2 {
-			cid := ss[1]
-			logrus.Debugf("Found container %s in iptables rule %s", cid, chain)
-			_, exists := currentContainers[cid]
-			if !exists {
-				logrus.Infof("Found iptables rule for %s, but it doesn't exist anymore. Removing. v=%s", cid, v)
-				ls := lineregex.FindStringSubmatch(v)
-				if len(ls) == 2 {
-					line := ls[1]
-					logrus.Debugf("Found orphan rule %s for container %s. Removing it.", line, cid)
-					_, err4 := ExecShellf("iptables -D %s %s", chain, line)
-					if err4 != nil {
-						logrus.Debugf("Error removing rule on line %s for container %s. err=%s", line, cid, err4)
-					} else {
-						logrus.Debug("Rule removed successfully")
-					}
-				}
-			} else {
-				logrus.Debugf("Container %s is not orphan", cid)
-			}
+func (s *Waller) initialize() error {
+	logrus.Debugf("initializing...")
+	//if no network was defined, use all bridge networks by default
+	if s.useDefaultNetworks {
+		logrus.Debugf("No docker networks were defined. Will use all 'bridge' networks on host")
+		opts := types.NetworkListOptions{
+			Filters: filters.NewArgs(filters.KeyValuePair{Key: "driver", Value: "bridge"}),
+		}
+		bnetworks, err := s.dockerClient.NetworkList(context.Background(), opts)
+		if err != nil {
+			return err
+		}
+		s.gatewayNetworks = make([]string, 0)
+		for _, bn := range bnetworks {
+			s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
 		}
 	}
+	logrus.Debugf("Bridge networks that will be managed: %v", s.gatewayNetworks)
+
+	err := s.updateIptablesChains()
+	if err != nil {
+		return fmt.Errorf("Error updating iptables basic chains, err=%s", err)
+	}
+
 	return nil
 }
 
 func (s *Waller) updateContainerFilters(container types.Container) error {
-	logrus.Debug("Running updateContainerFilters")
+	logrus.Debug("updateContainerFilters()")
 	cid := trunc(container.ID, 18)
 	//OUTBOUND DOMAIN IPs
 	outboundLabelValue := ""
@@ -238,6 +194,66 @@ func (s *Waller) updateIpsetIps(ipsetName string, domainNames string) error {
 	return nil
 }
 
+func (s *Waller) removeOrphans(containers []types.Container) error {
+	currentContainers, err := s.containerGwIPs()
+	if err != nil {
+		return err
+	}
+	err = s.removeOrphanRules("DOCKERWALL-ALLOW", currentContainers)
+	if err != nil {
+		return err
+	}
+	err = s.removeOrphanRules("DOCKERWALL-DENY", currentContainers)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]string) error {
+	logrus.Debugf("Retrieving iptables rules for %s", chain)
+	rules, err1 := ExecShellf("iptables -L %s -v --line-number", chain)
+	if err1 != nil {
+		return err1
+	}
+	rul, err2 := linesToArray(rules)
+	if err2 != nil {
+		return err2
+	}
+
+	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst")
+	lineregex, _ := regexp.Compile("^([0-9]+)")
+
+	//invert rules order so that we can remove rules without changing the line numbers
+	rul = reverseArray(rul)
+
+	for _, v := range rul {
+		ss := cidregex.FindStringSubmatch(v)
+		if len(ss) == 2 {
+			cid := ss[1]
+			logrus.Debugf("Found container %s in iptables rule %s", cid, chain)
+			_, exists := currentContainers[cid]
+			if !exists {
+				logrus.Infof("Found iptables rule for %s, but it doesn't exist anymore. Removing. v=%s", cid, v)
+				ls := lineregex.FindStringSubmatch(v)
+				if len(ls) == 2 {
+					line := ls[1]
+					logrus.Debugf("Found orphan rule %s for container %s. Removing it.", line, cid)
+					_, err4 := ExecShellf("iptables -D %s %s", chain, line)
+					if err4 != nil {
+						logrus.Debugf("Error removing rule on line %s for container %s. err=%s", line, cid, err4)
+					} else {
+						logrus.Debug("Rule removed successfully")
+					}
+				}
+			} else {
+				logrus.Debugf("Container %s is not orphan", cid)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (bool, error) {
 	rules, err1 := ExecShellf("iptables -L %s", chain)
 	if err1 != nil {
@@ -260,7 +276,7 @@ func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (
 func (s *Waller) containerGwIPs() (map[string][]string, error) {
 	containersGwIP := map[string][]string{}
 	for _, gwNetwork := range s.gatewayNetworks {
-		logrus.Debugf("Discovering container ips for network %s", gwNetwork)
+		// logrus.Debugf("Discovering container ips for network %s", gwNetwork)
 		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
 			logrus.Errorf("Error while listing container instances attached to network %s. err=%s", gwNetwork, err)
@@ -302,24 +318,53 @@ func (s *Waller) updateIptablesChains() error {
 		}
 	}
 
-	if !denyChainFound {
-		for _, gwNetwork := range s.gatewayNetworks {
-			logrus.Debugf("Adding default DROP policy for packets from gateway network %s", gwNetwork)
-			netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
+	logrus.Debug("Updating/creating ipset group for gateway subnets")
+	ipsetName := "managed-subnets"
+	_, err = ExecShellf("ipset list | grep %s", ipsetName)
+	if err != nil {
+		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetName, err)
+		_, err := ExecShellf("ipset -N %s iphash", ipsetName)
+		if err != nil {
+			return err
+		}
+	}
+	// TODO-fazer uma regra de iptables para cada rede, pois o ipset com subnet abre cada IP
+	ipsetNameTemp := "managed-subnets-TEMP"
+	_, err = ExecShellf("ipset list | grep %s", ipsetNameTemp)
+	if err != nil {
+		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetNameTemp, err)
+		_, err := ExecShellf("ipset -N %s iphash", ipsetNameTemp)
+		if err != nil {
+			return err
+		}
+	}
+	for _, gwNetwork := range s.gatewayNetworks {
+		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
+		if err != nil {
+			logrus.Errorf("Error while listing container instances. network=%s. err=%s", gwNetwork, err)
+			return fmt.Errorf("Could not inspect docker network %s", gwNetwork)
+		}
+		if len(netins.IPAM.Config) > 0 {
+			bridgeNetworkSubnet := netins.IPAM.Config[0].Subnet
+			_, err := ExecShellf("ipset -A %s %s", ipsetNameTemp, bridgeNetworkSubnet)
 			if err != nil {
-				logrus.Errorf("Error while listing container instances. network=%s. err=%s", gwNetwork, err)
-				return fmt.Errorf("Could not inspect docker network %s", gwNetwork)
+				logrus.Debugf("Error adding gw network subnet to ipset. Maybe it already exists. err=%s", err)
 			}
-			if len(netins.IPAM.Config) > 0 {
-				bridgeNetworkSubnet := netins.IPAM.Config[0].Subnet
-				_, err = ExecShellf("iptables -I DOCKER-USER -s %s -j DROP", bridgeNetworkSubnet)
-				if err != nil {
-					logrus.Warnf("Error running command. err=%s.", err)
-					return err
-				}
-			} else {
-				return fmt.Errorf("Could not find subnet configuration for docker network %s", gwNetwork)
-			}
+		} else {
+			return fmt.Errorf("Could not find subnet configuration for docker network %s", gwNetwork)
+		}
+	}
+	logrus.Debug("Commiting ipset group used for gw network subnets")
+	_, err = ExecShellf("ipset swap %s %s", ipsetNameTemp, ipsetName)
+	if err != nil {
+		logrus.Warnf("Error updating ipset used for network subnets. err=%s", err)
+	}
+
+	if !denyChainFound {
+		logrus.Debugf("Adding default DROP policy for packets from gateway networks")
+		_, err = ExecShellf("iptables -I DOCKER-USER -m set --match-set %s src -j DROP", ipsetName)
+		if err != nil {
+			return err
 		}
 
 		logrus.Debug("DOCKERWALL-DENY jump not found in chain DOCKER-USER. Creating it")
@@ -346,4 +391,65 @@ func (s *Waller) updateIptablesChains() error {
 	}
 
 	return nil
+}
+
+func (s *Waller) processDockerEvents() {
+	for {
+		logrus.Info("Starting to listen to docker events")
+		opts := types.EventsOptions{
+			Filters: filters.NewArgs(
+				filters.KeyValuePair{Key: "type", Value: "container"},
+				filters.KeyValuePair{Key: "type", Value: "network"},
+			),
+		}
+		chanMessages, chanError := s.dockerClient.Events(context.Background(), opts)
+		go s.processMessages(chanMessages)
+		err := <-chanError
+		logrus.Warnf("Found error on Docker events listen. restarting. err=%s", err)
+	}
+}
+
+func (s *Waller) processMessages(chanMessages <-chan events.Message) {
+	for message := range chanMessages {
+		logrus.Debugf("Received Docker event message %v", message)
+		useful := false
+		if message.Type == "container" {
+			if message.Action == "start" || message.Action == "stop" || message.Action == "die" {
+				useful = true
+				opts := types.ContainerListOptions{
+					Filters: filters.NewArgs(
+						filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
+					),
+				}
+				containers, err := s.dockerClient.ContainerList(context.Background(), opts)
+				if err != nil {
+					logrus.Debugf("Error listing containers. err=%s", err)
+					continue
+				}
+				if len(containers) == 1 {
+					s.updateContainerFilters(containers[0])
+				} else {
+					logrus.Warnf("Container listing should return one container for ID %s", message.Actor.ID)
+				}
+			}
+
+		} else if message.Type == "network" {
+			if message.Action == "create" || message.Action == "destroy" {
+				useful = true
+				s.initialize()
+			}
+		}
+
+		if useful {
+			logrus.Debug("Looking for orphaned ipset or iptables rules")
+			allContainers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+			if err != nil {
+				logrus.Errorf("Error removing orphans. err=%s", err)
+			}
+			err = s.removeOrphans(allContainers)
+			if err != nil {
+				logrus.Errorf("Error removing orphans. err=%s", err)
+			}
+		}
+	}
 }

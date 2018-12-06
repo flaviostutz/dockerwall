@@ -5,7 +5,12 @@ services:
   dockerwall:
     build: .
     image: flaviostutz/dockerwall
-    privileged: true
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
+    environment:
+      - LOG_LEVEL=debug
+      - GATEWAY_NETWORKS=docker_gwbridge
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 

@@ -15,7 +15,8 @@ import (
 
 //Waller Label based network filter constraints
 type Waller struct {
-	dockerClient *client.Client
+	dockerClient    *client.Client
+	gatewayNetworks []string
 }
 
 func (s *Waller) startup() error {
@@ -34,13 +35,14 @@ func (s *Waller) startup() error {
 		} else {
 			logrus.Debug("Updating filters and domain ips")
 			for _, cont := range containers {
+				cid := trunc(cont.ID, 18)
 				err = s.updateContainerFilters(cont)
 				if err != nil {
-					logrus.Errorf("Error updating container filter. container=%s, err=%s", cont.ID, err)
+					logrus.Errorf("Error updating container filter. container=%s, err=%s", cid, err)
 				}
 			}
 
-			logrus.Debug("Removing orphaned ipset or iptables rules")
+			logrus.Debug("Looking for orphaned ipset or iptables rules")
 			err = s.removeOrphans(containers)
 			if err != nil {
 				logrus.Errorf("Error removing orphans. err=%s", err)
@@ -66,9 +68,9 @@ func (s *Waller) removeOrphans(containers []types.Container) error {
 	return nil
 }
 
-func (s *Waller) removeOrphanRules(chain string, currentContainers map[string]string) error {
+func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]string) error {
 	logrus.Debugf("Retrieving iptables rules for %s", chain)
-	rules, err1 := ExecShellf("iptables -L %s", chain)
+	rules, err1 := ExecShellf("iptables -L %s -v --line-number", chain)
 	if err1 != nil {
 		return err1
 	}
@@ -77,20 +79,24 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string]st
 		return err2
 	}
 
-	cidregex, _ := regexp.Compile("match-set (.*)-outbound src")
+	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst")
 	lineregex, _ := regexp.Compile("^([0-9]+)")
 
 	//invert rules order so that we can remove rules without changing the line numbers
 	rul = reverseArray(rul)
 
 	for _, v := range rul {
-		cid := cidregex.FindString(v)
-		if cid != "" {
+		ss := cidregex.FindStringSubmatch(v)
+		if len(ss) == 2 {
+			cid := ss[1]
+			logrus.Debugf("Found container %s in iptables rule %s", cid, chain)
 			_, exists := currentContainers[cid]
 			if !exists {
-				line := lineregex.FindString(v)
-				if line != "" {
-					logrus.Debugf("Found orphan rule line %s for container %s. Removing it.", line, cid)
+				logrus.Infof("Found iptables rule for %s, but it doesn't exist anymore. Removing. v=%s", cid, v)
+				ls := lineregex.FindStringSubmatch(v)
+				if len(ls) == 2 {
+					line := ls[1]
+					logrus.Debugf("Found orphan rule %s for container %s. Removing it.", line, cid)
 					_, err4 := ExecShellf("iptables -D %s %s", chain, line)
 					if err4 != nil {
 						logrus.Debugf("Error removing rule on line %s for container %s. err=%s", line, cid, err4)
@@ -98,6 +104,8 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string]st
 						logrus.Debug("Rule removed successfully")
 					}
 				}
+			} else {
+				logrus.Debugf("Container %s is not orphan", cid)
 			}
 		}
 	}
@@ -106,6 +114,7 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string]st
 
 func (s *Waller) updateContainerFilters(container types.Container) error {
 	logrus.Debug("Running updateContainerFilters")
+	cid := trunc(container.ID, 18)
 	//OUTBOUND DOMAIN IPs
 	outboundLabelValue := ""
 	for k, v := range container.Labels {
@@ -113,45 +122,55 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			outboundLabelValue = v
 		}
 	}
-	outboundLabelValue = strings.Replace(outboundLabelValue, ",", " ", 0)
-	ipsetName := container.ID + "-outbound"
-	s.updateIpsetIps(ipsetName, outboundLabelValue)
 
-	logrus.Debugf("Verifying IPTABLES rules for container %s", container.ID)
+	logrus.Debugf("Verifying IPTABLES rules for container %s", cid)
 
 	//CONTAINER GW IP
 	gwIps, err := s.containerGwIPs()
 	if err != nil {
 		return err
 	}
-	srcIP, exists := gwIps[container.ID]
+	srcIPs, exists := gwIps[cid]
 	if !exists {
-		return fmt.Errorf("Could not find gateway IP for %s", container.ID)
+		return fmt.Errorf("Could not find gateway IP for %s. Ignoring it", cid)
+	}
+	ipregex, _ := regexp.Compile("([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})")
+	for i, si := range srcIPs {
+		srcIPs[i] = ipregex.FindString(si)
 	}
 
-	//IPTABLES ALLOW
-	allowRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", ipsetName)
-	if err1 != nil {
-		return err1
-	}
-	if !allowRuleFound {
-		logrus.Debugf("Iptables rule not found in chain DOCKERWALL-ALLOW for %s. Creating.", ipsetName)
-		_, err := ExecShellf("iptables -I DOCKERWALL-ALLOW -s %s -m set --match-set %s dst -j ACCEPT", srcIP, ipsetName)
-		if err != nil {
-			return err
+	//IPSET GROUP UPDATE
+	ipsetName := trunc(cid, 18)
+	ipsetName = ipsetName + "-dst"
+	s.updateIpsetIps(ipsetName, outboundLabelValue)
+
+	for _, srcIP := range srcIPs {
+		logrus.Debugf("Checking iptables rules for container src ip %s", srcIP)
+
+		//IPTABLES ALLOW
+		allowRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", ipsetName, srcIP)
+		if err1 != nil {
+			return err1
 		}
-	}
+		if !allowRuleFound {
+			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-ALLOW for %s. Creating.", ipsetName)
+			_, err := ExecShellf("iptables -I DOCKERWALL-ALLOW -s %s -m set --match-set %s dst -j ACCEPT", srcIP, ipsetName)
+			if err != nil {
+				return err
+			}
+		}
 
-	//IPTABLES DENY
-	denyRuleFound, err2 := s.findRule("DOCKERWALL-DENY", ipsetName)
-	if err2 != nil {
-		return err2
-	}
-	if !denyRuleFound {
-		logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s. Creating.", ipsetName)
-		_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s src -m set ! --match-set %s dst -j DROP", srcIP, ipsetName)
-		if err != nil {
-			return err
+		//IPTABLES DENY
+		denyRuleFound, err2 := s.findRule("DOCKERWALL-DENY", ipsetName, srcIP)
+		if err2 != nil {
+			return err2
+		}
+		if !denyRuleFound {
+			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s. Creating.", ipsetName)
+			_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j DROP", srcIP, ipsetName)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -159,7 +178,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 }
 
 func (s *Waller) updateIpsetIps(ipsetName string, domainNames string) error {
-	logrus.Debugf("Adding IPSET group %s domains %s", ipsetName, domainNames)
+	logrus.Debugf("Adding domains %s to IPSET group %s", domainNames, ipsetName)
 
 	_, err := ExecShellf("ipset list | grep %s", ipsetName)
 	if err != nil {
@@ -170,16 +189,40 @@ func (s *Waller) updateIpsetIps(ipsetName string, domainNames string) error {
 		}
 	}
 
-	logrus.Debugf("Getting domain name IPs and adding to ipset %s", ipsetName)
-	_, err = ExecShellf("dig A +short %s | xargs -L1 ipset -A %s", domainNames, ipsetName)
-	if err != nil {
-		return err
+	ipregex, _ := regexp.Compile("([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})")
+	ips := ipregex.FindAllString(domainNames, -1)
+	ipstr := ""
+	for _, ip := range ips {
+		ipstr = ipstr + ip + "\n"
+	}
+
+	if ipstr != "" {
+		logrus.Debugf("Adding ip rules to ipset %s. ips=%s", ipsetName, ipstr)
+		_, err = ExecShellf("echo -e \"%s\" | xargs -L1 ipset -A %s", ipstr, ipsetName)
+		if err != nil {
+			logrus.Debugf("Couldn't add ips to ipset group. err=%s", err)
+		}
+	}
+
+	domainregex, _ := regexp.Compile("([a-zA-Z0-9-\\.]+)")
+	domains := domainregex.FindAllString(domainNames, -1)
+	domainsstr := ""
+	for _, domain := range domains {
+		domainsstr = domainsstr + domain + " "
+	}
+
+	if domainsstr != "" {
+		logrus.Debugf("Getting domain name IPs and adding to ipset %s. domains=%s", ipsetName, domainsstr)
+		_, err1 := ExecShellf("dig A +short %s | xargs -L1 ipset -A %s", domainsstr, ipsetName)
+		if err1 != nil {
+			logrus.Debugf("Couldn't add ips to ipset group %s. err=%s", ipsetName, err1)
+		}
 	}
 
 	return nil
 }
 
-func (s *Waller) findRule(chain string, ruleSubstr string) (bool, error) {
+func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (bool, error) {
 	rules, err1 := ExecShellf("iptables -L %s", chain)
 	if err1 != nil {
 		return false, err1
@@ -190,7 +233,7 @@ func (s *Waller) findRule(chain string, ruleSubstr string) (bool, error) {
 	}
 
 	for _, v := range rul {
-		if strings.Contains(v, ruleSubstr) {
+		if strings.Contains(v, ruleSubstr) && strings.Contains(v, ruleSubstr2) {
 			return true, nil
 		}
 	}
@@ -198,16 +241,22 @@ func (s *Waller) findRule(chain string, ruleSubstr string) (bool, error) {
 	return false, nil
 }
 
-func (s *Waller) containerGwIPs() (map[string]string, error) {
-	logrus.Debugf("Discovering container GW ips")
-	containersGwIP := map[string]string{}
-	netins, err := s.dockerClient.NetworkInspect(context.Background(), "docker_gwbridge", types.NetworkInspectOptions{})
-	if err != nil {
-		logrus.Errorf("Error while listing container instances. err=%s", err)
-		return containersGwIP, err
-	}
-	for k, cont := range netins.Containers {
-		containersGwIP[k] = cont.IPv4Address
+func (s *Waller) containerGwIPs() (map[string][]string, error) {
+	containersGwIP := map[string][]string{}
+	for _, gwNetwork := range s.gatewayNetworks {
+		logrus.Debugf("Discovering container ips for network %s", gwNetwork)
+		netins, err := s.dockerClient.NetworkInspect(context.Background(), "docker_gwbridge", types.NetworkInspectOptions{})
+		if err != nil {
+			logrus.Errorf("Error while listing container instances attached to network %s. err=%s", gwNetwork, err)
+			return containersGwIP, err
+		}
+		for k, cont := range netins.Containers {
+			k = trunc(k, 18)
+			if containersGwIP[k] == nil {
+				containersGwIP[k] = make([]string, 0)
+			}
+			containersGwIP[k] = append(containersGwIP[k], cont.IPv4Address)
+		}
 	}
 	return containersGwIP, nil
 }
@@ -215,7 +264,7 @@ func (s *Waller) containerGwIPs() (map[string]string, error) {
 func (s *Waller) updateIptablesChains() error {
 	_, err := ExecShell("iptables -L DOCKER-USER")
 	if err != nil {
-		return fmt.Errorf("Couldn't find DOCKER-USER chain. Check if Docker is installed in this host. err=%s", err)
+		return fmt.Errorf("Error querying DOCKER-USER Iptables chain. Check if both Iptables and Docker are installed on this host. err=%s", err)
 	}
 
 	//check existing rules
@@ -237,29 +286,44 @@ func (s *Waller) updateIptablesChains() error {
 		}
 	}
 
-	if !allowChainFound {
-		logrus.Debug("Jump to DOCKERWALL-ALLOW not found in chain DOCKER-USER. Creating it")
-		_, err = ExecShell("iptables -N DOCKERWALL-ALLOW")
-		if err != nil {
-			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
-		}
-		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-ALLOW")
-		if err != nil {
-			return err
-		}
-	}
-
 	if !denyChainFound {
-		logrus.Debug("Jump to DOCKERWALL-DENY not found in chain DOCKER-USER. Creating it")
+		for _, gwNetwork := range s.gatewayNetworks {
+			logrus.Debugf("Adding default DROP policy for packets from gateway network %s", gwNetwork)
+			netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
+			if err != nil {
+				logrus.Errorf("Error while listing container instances. network=%s. err=%s", gwNetwork, err)
+				return fmt.Errorf("Could not inspect docker network %s", gwNetwork)
+			}
+			if len(netins.IPAM.Config) > 0 {
+				bridgeNetworkSubnet := netins.IPAM.Config[0].Subnet
+				_, err = ExecShellf("iptables -I DOCKER-USER -s %s -j DROP", bridgeNetworkSubnet)
+				if err != nil {
+					logrus.Warnf("Error running command. err=%s.", err)
+					return err
+				}
+			} else {
+				return fmt.Errorf("Could not find subnet configuration for docker network %s", gwNetwork)
+			}
+		}
+
+		logrus.Debug("DOCKERWALL-DENY jump not found in chain DOCKER-USER. Creating it")
 		_, err = ExecShell("iptables -N DOCKERWALL-DENY")
 		if err != nil {
-			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
+			logrus.Debugf("Ignoring error on chain creation (it may already exist). err=%s", err)
 		}
 		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-DENY")
 		if err != nil {
 			return err
 		}
-		_, err = ExecShell("iptables -I DOCKER-USER -j DROP")
+	}
+
+	if !allowChainFound {
+		logrus.Debug("DOCKERWALL-ALLOW jump not found in chain DOCKER-USER. Creating it")
+		_, err = ExecShell("iptables -N DOCKERWALL-ALLOW")
+		if err != nil {
+			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
+		}
+		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-ALLOW")
 		if err != nil {
 			return err
 		}

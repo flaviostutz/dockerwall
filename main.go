@@ -14,6 +14,7 @@ import (
 	_ "github.com/docker/docker/api/types"
 	_ "github.com/docker/docker/api/types/events"
 	_ "github.com/docker/docker/client"
+	_ "github.com/go-cmd/cmd"
 )
 
 func main() {

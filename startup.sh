@@ -4,5 +4,6 @@ set -x
 
 echo "Starting DockerWall..."
 dockerwall \
-    --loglevel=$LOG_LEVEL
-    
+    --loglevel=$LOG_LEVEL \
+    --gateway-networks=$GATEWAY_NETWORKS
+

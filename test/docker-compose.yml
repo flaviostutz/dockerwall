@@ -5,9 +5,6 @@ services:
   test1:
     image: busybox:1.29
     command: sh -c "ping 8.8.8.8"
-    deploy:
-      labels:
-        - "dockerwall.outbound=www.google.com"
     labels:
       - "dockerwall.outbound=www.yahoo.com,www.uol.com.br"
 

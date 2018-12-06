@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"os"
+	"strings"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/client"
@@ -12,7 +14,7 @@ const VERSION = "1.0.0-beta"
 func main() {
 	versionFlag := flag.Bool("version", false, "Print version")
 	logLevel := flag.String("loglevel", "debug", "debug, info, warning, error")
-	// lockTimeoutMillis := flag.Uint64("lock-timeout", 10*1000, "If a host with a mounted device stops sending lock refreshs, it will be release to another host to mount the image after this time")
+	gatewayNetworks := flag.String("gateway-networks", "docker_gwbridge,bridge0", "Docker networks whose gateway access will be managed by DockerWall")
 	flag.Parse()
 
 	switch *logLevel {
@@ -36,19 +38,23 @@ func main() {
 
 	logrus.Infof("====Starting Dockerwall %s====", VERSION)
 
-	cli, err := client.NewEnvClient()
+	cli, err := client.NewClientWithOpts(client.WithVersion("1.38"))
 	if err != nil {
 		logrus.Errorf("Error creating Docker client instance. err=%s", err)
 		return
 	}
 
+	gn := strings.Split(*gatewayNetworks, ",")
+
 	swarmWaller := Waller{
-		dockerClient: cli,
+		dockerClient:    cli,
+		gatewayNetworks: gn,
 	}
 
 	err = swarmWaller.startup()
 	if err != nil {
 		logrus.Errorf("Startup error. Exiting. err=%s", err)
+		os.Exit(1)
 	}
 
 }

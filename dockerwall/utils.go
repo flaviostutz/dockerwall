@@ -18,6 +18,7 @@ type ShellContext struct {
 
 //ExecShellTimeout execute a shell command (like bash -c 'your command') with a timeout. After that time, the process will be cancelled
 func ExecShellTimeout(command string, timeout time.Duration, ctx *ShellContext) (string, error) {
+	logrus.Debugf("shell command: %s", command)
 	acmd := cmd.NewCmd("bash", "-c", command)
 	statusChan := acmd.Start() // non-blocking
 	running := true
@@ -40,16 +41,16 @@ func ExecShellTimeout(command string, timeout time.Duration, ctx *ShellContext) 
 		}()
 	}
 
-	logrus.Debugf("Waiting for command to finish...")
+	// logrus.Debugf("Waiting for command to finish...")
 	<-statusChan
-	logrus.Debugf("Command finished")
+	// logrus.Debugf("Command finished")
 	running = false
 
 	out := GetCmdOutput(acmd)
 	status := acmd.Status()
-	logrus.Debugf("Output: %s", out)
+	logrus.Debugf("shell output (%d): %s", status.Exit, out)
 	if status.Exit != 0 {
-		return out, fmt.Errorf("Failed to run command: '%s'; exit=%d", command, status.Exit)
+		return out, fmt.Errorf("Failed to run command: '%s'; exit=%d; out=%s", command, status.Exit, out)
 	} else {
 		return out, nil
 	}
@@ -61,8 +62,8 @@ func ExecShell(command string) (string, error) {
 }
 
 //ExecShellf execute a shell command (like bash -c 'your command') but with format replacements
-func ExecShellf(command string, args ...string) (string, error) {
-	cmd := fmt.Sprintf(command, args)
+func ExecShellf(command string, args ...interface{}) (string, error) {
+	cmd := fmt.Sprintf(command, args...)
 	return ExecShellTimeout(cmd, 0, nil)
 }
 
@@ -91,4 +92,15 @@ func reverseArray(lines []string) []string {
 		lines[i], lines[j] = lines[j], lines[i]
 	}
 	return lines
+}
+
+func trunc(str string, num int) string {
+	bnoden := str
+	if len(str) > num {
+		if num > 3 {
+			num -= 3
+		}
+		bnoden = str[0:num]
+	}
+	return bnoden
 }

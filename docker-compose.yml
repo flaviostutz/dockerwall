@@ -10,7 +10,7 @@ services:
     network_mode: host
     environment:
       - LOG_LEVEL=debug
-      - GATEWAY_NETWORKS=docker_gwbridge
+      - GATEWAY_NETWORKS=
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 

@@ -14,7 +14,7 @@ const VERSION = "1.0.0-beta"
 func main() {
 	versionFlag := flag.Bool("version", false, "Print version")
 	logLevel := flag.String("loglevel", "debug", "debug, info, warning, error")
-	gatewayNetworks := flag.String("gateway-networks", "docker_gwbridge,bridge0", "Docker networks whose gateway access will be managed by DockerWall")
+	gatewayNetworks := flag.String("gateway-networks", "", "Docker networks whose gateway access will be managed by DockerWall. If empty, all bridge networks will be used")
 	flag.Parse()
 
 	switch *logLevel {
@@ -44,7 +44,10 @@ func main() {
 		return
 	}
 
-	gn := strings.Split(*gatewayNetworks, ",")
+	gn := make([]string, 0)
+	if *gatewayNetworks != "" {
+		gn = strings.Split(*gatewayNetworks, ",")
+	}
 
 	swarmWaller := Waller{
 		dockerClient:    cli,

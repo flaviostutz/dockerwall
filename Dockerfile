@@ -29,7 +29,7 @@ ENV LOG_LEVEL 'info'
 COPY --from=BUILD /go/bin/* /bin/
 ADD startup.sh /
 
-ENV GATEWAY_NETWORKS "docker_gwbridge,bridge0"
+ENV GATEWAY_NETWORKS ""
 
 VOLUME [ "/var/run/docker.sock" ]
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 )
 
@@ -21,6 +22,21 @@ type Waller struct {
 
 func (s *Waller) startup() error {
 	logrus.Infof("Performing initial full filter updates for all current containers")
+
+	if len(s.gatewayNetworks) == 0 {
+		logrus.Debugf("No docker networks were defined. Will use all 'bridge' networks on host")
+		opts := types.NetworkListOptions{
+			Filters: filters.NewArgs(filters.KeyValuePair{Key: "driver", Value: "bridge"}),
+		}
+		bnetworks, err := s.dockerClient.NetworkList(context.Background(), opts)
+		if err != nil {
+			return err
+		}
+		for _, bn := range bnetworks {
+			s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
+		}
+	}
+	logrus.Debugf("Bridge networks that will be managed: %v", s.gatewayNetworks)
 
 	err := s.updateIptablesChains()
 	if err != nil {
@@ -245,7 +261,7 @@ func (s *Waller) containerGwIPs() (map[string][]string, error) {
 	containersGwIP := map[string][]string{}
 	for _, gwNetwork := range s.gatewayNetworks {
 		logrus.Debugf("Discovering container ips for network %s", gwNetwork)
-		netins, err := s.dockerClient.NetworkInspect(context.Background(), "docker_gwbridge", types.NetworkInspectOptions{})
+		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
 			logrus.Errorf("Error while listing container instances attached to network %s. err=%s", gwNetwork, err)
 			return containersGwIP, err

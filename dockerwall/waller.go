@@ -47,7 +47,6 @@ var networkPackets = prometheus.NewCounterVec(prometheus.CounterOpts{
 })
 
 func (s *Waller) init() {
-	s.m = &sync.Mutex{}
 	prometheus.MustRegister(networkBytes)
 	prometheus.MustRegister(networkPackets)
 }

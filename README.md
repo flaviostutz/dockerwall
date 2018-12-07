@@ -1,5 +1,15 @@
 # dockerwall
-A packet filter for communications from Docker containers to its default gateway.  Configurable by labels
+A packet filter for communications from Docker containers to its default gateway. Configurable by labels.
+
+Run DockerWall container on all hosts you want to limit access of running containers to the Internet, so that even if those containers gets compromised, they will have limited network access to the Internet or to your internal network.
+
+By default all containers are denied access to any host, except those in docker networks that it is directly attached.
+
+Simply add label "dockerwall.outbound=www.yahoo.com" to the container that will be allowed access to www.yahoo.com. DockerWall will configure hosts's IPTables chains/rules to ACCEPT those packets and DROP the others.
+
+DockerWall will automatically update the IPs related to domain names periodically.
+
+Tested with standalone containers, docker-compose and Swarm Clusters.
 
 # Usage
 
@@ -38,3 +48,7 @@ services:
 # Prometheus metrics
 
    * Metrics exposed at http://localhost:8000/metrics
+
+# Swarm Clusters
+
+   * Run DockerWall with "global" placement, so that all managers and workers of the cluster will have an instance of DockerWall, controling access of all containers in the cluster

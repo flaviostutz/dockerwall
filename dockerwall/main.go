@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/client"
@@ -53,8 +54,10 @@ func main() {
 		dockerClient:       cli,
 		useDefaultNetworks: (*gatewayNetworks == ""),
 		gatewayNetworks:    gn,
+		m:                  &sync.Mutex{},
 	}
 
+	swarmWaller.init()
 	err = swarmWaller.startup()
 	if err != nil {
 		logrus.Errorf("Startup error. Exiting. err=%s", err)

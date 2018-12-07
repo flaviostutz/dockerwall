@@ -4,9 +4,9 @@ services:
 
   test1:
     image: busybox:1.29
-    command: sh -c "ping www.uol.com.br"
+    command: sh -c "ping api.twitter.com"
     labels:
-      - "dockerwall.outbound=www.yahoo.com"
+      - "dockerwall.outbound=www.yahoo.com,api.twitter.com"
     networks:
       - test
 

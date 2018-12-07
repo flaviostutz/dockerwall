@@ -9,16 +9,13 @@ services:
       - NET_ADMIN
     network_mode: host
     environment:
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=info
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
   test:
     image: busybox:1.29
-    command: sh -c "ping 8.8.8.8"
-    deploy:
-      labels:
-        - "dockerwall.outbound=www.google.com"
+    command: sh -c "ping www.google.com"
     labels:
-      - "dockerwall.outbound=www.yahoo.com,www.uol.com.br"
+      - "dockerwall.outbound=www.yahoo.com,www.google.com"
 

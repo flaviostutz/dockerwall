@@ -43,7 +43,7 @@ func (s *Waller) startup() error {
 				cid := trunc(cont.ID, 18)
 				err = s.updateContainerFilters(cont)
 				if err != nil {
-					logrus.Errorf("Error updating container filter. container=%s, err=%s", cid, err)
+					logrus.Warnf("Error updating container filter. container=%s, err=%s", cid, err)
 				}
 			}
 
@@ -53,7 +53,7 @@ func (s *Waller) startup() error {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
-		time.Sleep(10000000 * time.Millisecond)
+		time.Sleep(10000 * time.Millisecond)
 	}
 }
 
@@ -87,13 +87,6 @@ func (s *Waller) initialize() error {
 func (s *Waller) updateContainerFilters(container types.Container) error {
 	logrus.Debug("updateContainerFilters()")
 	cid := trunc(container.ID, 18)
-	//OUTBOUND DOMAIN IPs
-	outboundLabelValue := ""
-	for k, v := range container.Labels {
-		if k == "dockerwall.outbound" {
-			outboundLabelValue = v
-		}
-	}
 
 	logrus.Debugf("Verifying IPTABLES rules for container %s", cid)
 
@@ -104,7 +97,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	}
 	srcIPs, exists := gwIps[cid]
 	if !exists {
-		return fmt.Errorf("Could not find gateway IP for %s. Ignoring it", cid)
+		return fmt.Errorf("Could not find gateway IP for %s", cid)
 	}
 	ipregex, _ := regexp.Compile("([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})")
 	for i, si := range srcIPs {
@@ -114,7 +107,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	//IPSET GROUP UPDATE
 	ipsetName := trunc(cid, 18)
 	ipsetName = ipsetName + "-dst"
-	s.updateIpsetIps(ipsetName, outboundLabelValue)
+	s.updateIpsetIps(ipsetName, container)
 
 	for _, srcIP := range srcIPs {
 		logrus.Debugf("Checking iptables rules for container src ip %s", srcIP)
@@ -149,7 +142,16 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	return nil
 }
 
-func (s *Waller) updateIpsetIps(ipsetName string, domainNames string) error {
+func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) error {
+	//OUTBOUND DOMAIN IPs
+	domainNames := ""
+	for k, v := range container.Labels {
+		if k == "dockerwall.outbound" {
+			domainNames = v
+			break
+		}
+	}
+
 	logrus.Debugf("Adding domains %s to IPSET group %s", domainNames, ipsetName)
 
 	_, err := ExecShellf("ipset list | grep %s", ipsetName)
@@ -323,21 +325,22 @@ func (s *Waller) updateIptablesChains() error {
 	_, err = ExecShellf("ipset list | grep %s", ipsetName)
 	if err != nil {
 		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetName, err)
-		_, err := ExecShellf("ipset -N %s iphash", ipsetName)
+		_, err := ExecShellf("ipset -N %s nethash", ipsetName)
 		if err != nil {
 			return err
 		}
 	}
-	// TODO-fazer uma regra de iptables para cada rede, pois o ipset com subnet abre cada IP
+
 	ipsetNameTemp := "managed-subnets-TEMP"
 	_, err = ExecShellf("ipset list | grep %s", ipsetNameTemp)
 	if err != nil {
 		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetNameTemp, err)
-		_, err := ExecShellf("ipset -N %s iphash", ipsetNameTemp)
+		_, err := ExecShellf("ipset -N %s nethash", ipsetNameTemp)
 		if err != nil {
 			return err
 		}
 	}
+
 	for _, gwNetwork := range s.gatewayNetworks {
 		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
@@ -412,10 +415,11 @@ func (s *Waller) processDockerEvents() {
 func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 	for message := range chanMessages {
 		logrus.Debugf("Received Docker event message %v", message)
-		useful := false
 		if message.Type == "container" {
-			if message.Action == "start" || message.Action == "stop" || message.Action == "die" {
-				useful = true
+			//IPSET GROUP UPDATE
+			ipsetName := trunc(message.Actor.ID, 18)
+			ipsetName = ipsetName + "-dst"
+			if message.Action == "start" {
 				opts := types.ContainerListOptions{
 					Filters: filters.NewArgs(
 						filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
@@ -427,28 +431,40 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 					continue
 				}
 				if len(containers) == 1 {
-					s.updateContainerFilters(containers[0])
+					s.updateIpsetIps(ipsetName, containers[0])
 				} else {
-					logrus.Warnf("Container listing should return one container for ID %s", message.Actor.ID)
+					logrus.Warnf("Container %s not found", message.Actor.ID)
+				}
+
+			} else if message.Action == "stop" || message.Action == "die" {
+				logrus.Debugf("Keeping iptables rules, but clearing ipset group ips to avoid colision while orphan task is not run")
+				_, err := ExecShellf("ipset flush %s", ipsetName)
+				if err != nil {
+					logrus.Warnf("Error clearing ipset group %s", ipsetName)
 				}
 			}
+			// opts := types.ContainerListOptions{
+			// 	Filters: filters.NewArgs(
+			// 		filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
+			// 	),
+			// }
+			// containers, err := s.dockerClient.ContainerList(context.Background(), opts)
+			// if err != nil {
+			// 	logrus.Debugf("Error listing containers. err=%s", err)
+			// 	continue
+			// }
+			// if len(containers) == 1 {
+			// 	err := s.updateContainerFilters(containers[0])
+			// 	if err != nil {
+			// 		logrus.Errorf("Error updating container filter. container=%s, err=%s", containers[0].ID, err)
+			// 	}
+			// } else {
+			// 	logrus.Warnf("Container listing should return one container for ID %s", message.Actor.ID)
+			// }
 
 		} else if message.Type == "network" {
 			if message.Action == "create" || message.Action == "destroy" {
-				useful = true
 				s.initialize()
-			}
-		}
-
-		if useful {
-			logrus.Debug("Looking for orphaned ipset or iptables rules")
-			allContainers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-			if err != nil {
-				logrus.Errorf("Error removing orphans. err=%s", err)
-			}
-			err = s.removeOrphans(allContainers)
-			if err != nil {
-				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
 	}

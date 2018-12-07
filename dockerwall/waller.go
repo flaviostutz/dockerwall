@@ -53,7 +53,7 @@ func (s *Waller) startup() error {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
-		time.Sleep(10000 * time.Millisecond)
+		time.Sleep(600000 * time.Millisecond)
 	}
 }
 
@@ -437,30 +437,12 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 				}
 
 			} else if message.Action == "stop" || message.Action == "die" {
-				logrus.Debugf("Keeping iptables rules, but clearing ipset group ips to avoid colision while orphan task is not run")
+				logrus.Debugf("Keeping iptables rules, but clearing ipset group ips to avoid outbound colision while remove orphans task is not run")
 				_, err := ExecShellf("ipset flush %s", ipsetName)
 				if err != nil {
 					logrus.Warnf("Error clearing ipset group %s", ipsetName)
 				}
 			}
-			// opts := types.ContainerListOptions{
-			// 	Filters: filters.NewArgs(
-			// 		filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
-			// 	),
-			// }
-			// containers, err := s.dockerClient.ContainerList(context.Background(), opts)
-			// if err != nil {
-			// 	logrus.Debugf("Error listing containers. err=%s", err)
-			// 	continue
-			// }
-			// if len(containers) == 1 {
-			// 	err := s.updateContainerFilters(containers[0])
-			// 	if err != nil {
-			// 		logrus.Errorf("Error updating container filter. container=%s, err=%s", containers[0].ID, err)
-			// 	}
-			// } else {
-			// 	logrus.Warnf("Container listing should return one container for ID %s", message.Actor.ID)
-			// }
 
 		} else if message.Type == "network" {
 			if message.Action == "create" || message.Action == "destroy" {

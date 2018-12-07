@@ -15,6 +15,9 @@ import (
 	_ "github.com/docker/docker/api/types/events"
 	_ "github.com/docker/docker/client"
 	_ "github.com/go-cmd/cmd"
+
+	_ "github.com/prometheus/client_golang/prometheus"
+	_ "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {

@@ -34,3 +34,7 @@ services:
 
 # ENV configurations
   * GATEWAY_NETWORKS - Docker networks from which traffic will be filtered by DockerWall. If empty, all "bridge" networks will be discovered and used for filtering.
+
+# Prometheus metrics
+
+   * Metrics exposed at http://localhost:8000/metrics

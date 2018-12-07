@@ -32,6 +32,7 @@ ADD startup.sh /
 ENV GATEWAY_NETWORKS ""
 
 VOLUME [ "/var/run/docker.sock" ]
+EXPOSE 8000
 
 # ENTRYPOINT [ "/bin/sh" ]
 CMD [ "/startup.sh" ]

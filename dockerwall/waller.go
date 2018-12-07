@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"regexp"
@@ -13,6 +16,10 @@ import (
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/gorilla/mux"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //Waller Label based network filter constraints
@@ -20,19 +27,58 @@ type Waller struct {
 	dockerClient       *client.Client
 	useDefaultNetworks bool
 	gatewayNetworks    []string
+	m                  *sync.Mutex
+}
+
+var networkBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "network_bytes",
+	Help: "Network bytes",
+}, []string{
+	"container_name",
+	"effect",
+})
+
+var networkPackets = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "network_packets",
+	Help: "Network packets",
+}, []string{
+	"container_name",
+	"effect",
+})
+
+func (s *Waller) init() {
+	s.m = &sync.Mutex{}
+	prometheus.MustRegister(networkBytes)
+	prometheus.MustRegister(networkPackets)
 }
 
 func (s *Waller) startup() error {
 	logrus.Infof("Performing initial full filter updates for all current containers")
 
-	err := s.initialize()
+	err := s.updateGatewayNetworks()
 	if err != nil {
 		return err
 	}
 
-	go s.processDockerEvents()
+	go s.sanitizer()
+	go s.dockerEvents()
+	go s.metrics()
 
+	router := mux.NewRouter()
+	router.Handle("/metrics", promhttp.Handler())
+	err = http.ListenAndServe("0.0.0.0:8000", router)
+	if err != nil {
+		logrus.Errorf("Error while listening requests: %s", err)
+		os.Exit(1)
+	}
+
+	return nil
+}
+
+func (s *Waller) sanitizer() {
+	logrus.Debugf("Starting sanitizer")
 	for {
+		s.m.Lock()
 		containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
 		if err != nil {
 			logrus.Errorf("Error listing containers. err=%s", err)
@@ -53,12 +99,92 @@ func (s *Waller) startup() error {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
-		time.Sleep(600000 * time.Millisecond)
+		s.m.Unlock()
+		time.Sleep(300000 * time.Millisecond)
 	}
 }
 
-func (s *Waller) initialize() error {
-	logrus.Debugf("initializing...")
+func (s *Waller) dockerEvents() {
+	for {
+		logrus.Info("Starting to listen to docker events")
+		opts := types.EventsOptions{
+			Filters: filters.NewArgs(
+				filters.KeyValuePair{Key: "type", Value: "container"},
+				filters.KeyValuePair{Key: "type", Value: "network"},
+			),
+		}
+		chanMessages, chanError := s.dockerClient.Events(context.Background(), opts)
+		go s.processMessages(chanMessages)
+		err := <-chanError
+		logrus.Warnf("Found error on Docker events listen. restarting. err=%s", err)
+	}
+}
+
+func (s *Waller) metrics() {
+	for {
+		s.m.Lock()
+		// networkBytes.WithLabelValues()
+		// networkPackets.WithLabelValues()
+		s.m.Unlock()
+		time.Sleep(10000 * time.Millisecond)
+	}
+}
+
+func (s *Waller) processMessages(chanMessages <-chan events.Message) {
+	for message := range chanMessages {
+		s.m.Lock()
+		logrus.Debugf("Received Docker event message %v", message)
+		if message.Type == "container" {
+			//IPSET GROUP UPDATE
+			ipsetName := trunc(message.Actor.ID, 18)
+			ipsetName = ipsetName + "-dst"
+			if message.Action == "start" {
+
+				opts := types.ContainerListOptions{
+					Filters: filters.NewArgs(
+						filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
+					),
+				}
+				containers, err := s.dockerClient.ContainerList(context.Background(), opts)
+				if err != nil {
+					logrus.Debugf("Error listing containers. err=%s", err)
+					continue
+				}
+				if len(containers) == 1 {
+					container := containers[0]
+
+					_, err = ExecShellf("ipset list | grep %s", ipsetName)
+					if err != nil {
+						logrus.Debugf("First time seeing this container. Preparing iptables and ipset outbound ips")
+						s.updateContainerFilters(container)
+					} else {
+						logrus.Debugf("Container already known. Updating ipset outbound ips")
+						s.updateIpsetIps(ipsetName, container)
+					}
+
+				} else {
+					logrus.Warnf("Container %s not found", message.Actor.ID)
+				}
+
+			} else if message.Action == "stop" || message.Action == "die" {
+				logrus.Debugf("Keeping iptables rules, but clearing ipset group ips to avoid outbound colision while remove orphans task is not run")
+				_, err := ExecShellf("ipset flush %s", ipsetName)
+				if err != nil {
+					logrus.Warnf("Error clearing ipset group %s", ipsetName)
+				}
+			}
+
+		} else if message.Type == "network" {
+			if message.Action == "create" || message.Action == "destroy" {
+				s.updateGatewayNetworks()
+			}
+		}
+		s.m.Unlock()
+	}
+}
+
+func (s *Waller) updateGatewayNetworks() error {
+	logrus.Debugf("updateGatewayNetworks()")
 	//if no network was defined, use all bridge networks by default
 	if s.useDefaultNetworks {
 		logrus.Debugf("No docker networks were defined. Will use all 'bridge' networks on host")
@@ -394,60 +520,4 @@ func (s *Waller) updateIptablesChains() error {
 	}
 
 	return nil
-}
-
-func (s *Waller) processDockerEvents() {
-	for {
-		logrus.Info("Starting to listen to docker events")
-		opts := types.EventsOptions{
-			Filters: filters.NewArgs(
-				filters.KeyValuePair{Key: "type", Value: "container"},
-				filters.KeyValuePair{Key: "type", Value: "network"},
-			),
-		}
-		chanMessages, chanError := s.dockerClient.Events(context.Background(), opts)
-		go s.processMessages(chanMessages)
-		err := <-chanError
-		logrus.Warnf("Found error on Docker events listen. restarting. err=%s", err)
-	}
-}
-
-func (s *Waller) processMessages(chanMessages <-chan events.Message) {
-	for message := range chanMessages {
-		logrus.Debugf("Received Docker event message %v", message)
-		if message.Type == "container" {
-			//IPSET GROUP UPDATE
-			ipsetName := trunc(message.Actor.ID, 18)
-			ipsetName = ipsetName + "-dst"
-			if message.Action == "start" {
-				opts := types.ContainerListOptions{
-					Filters: filters.NewArgs(
-						filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
-					),
-				}
-				containers, err := s.dockerClient.ContainerList(context.Background(), opts)
-				if err != nil {
-					logrus.Debugf("Error listing containers. err=%s", err)
-					continue
-				}
-				if len(containers) == 1 {
-					s.updateIpsetIps(ipsetName, containers[0])
-				} else {
-					logrus.Warnf("Container %s not found", message.Actor.ID)
-				}
-
-			} else if message.Action == "stop" || message.Action == "die" {
-				logrus.Debugf("Keeping iptables rules, but clearing ipset group ips to avoid outbound colision while remove orphans task is not run")
-				_, err := ExecShellf("ipset flush %s", ipsetName)
-				if err != nil {
-					logrus.Warnf("Error clearing ipset group %s", ipsetName)
-				}
-			}
-
-		} else if message.Type == "network" {
-			if message.Action == "create" || message.Action == "destroy" {
-				s.initialize()
-			}
-		}
-	}
 }

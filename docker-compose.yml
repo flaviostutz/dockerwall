@@ -24,4 +24,4 @@ services:
     ports:
       - 9090:9090
     environment:
-      - STATIC_SCRAPE_TARGETS=dockerwall@dockerwall:50000
+      - STATIC_SCRAPE_TARGETS=dockerwall@192.168.20.18:50000

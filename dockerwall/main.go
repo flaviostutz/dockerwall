@@ -54,6 +54,7 @@ func main() {
 		dockerClient:       cli,
 		useDefaultNetworks: (*gatewayNetworks == ""),
 		gatewayNetworks:    gn,
+		currentMetrics:     "",
 		m:                  &sync.Mutex{},
 	}
 

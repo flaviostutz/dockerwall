@@ -19,3 +19,9 @@ services:
     labels:
       - "dockerwall.outbound=www.yahoo.com,www.google.com"
 
+  prometheus:
+    image: flaviostutz/prometheus
+    ports:
+      - 9090:9090
+    environment:
+      - STATIC_SCRAPE_TARGETS=dockerwall@dockerwall:50000

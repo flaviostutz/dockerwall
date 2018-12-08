@@ -47,8 +47,12 @@ services:
 
 # Prometheus metrics
 
-   * Metrics exposed at http://localhost:8000/metrics
+   * Metrics exposed at http://localhost:50000/metrics
 
 # Swarm Clusters
 
    * Run DockerWall with "global" placement, so that all managers and workers of the cluster will have an instance of DockerWall, controling access of all containers in the cluster
+
+# Practical Considerations
+
+   * If you don't specify DockerWall gateway networks, all bridge networks will be managed. It means that even the "docker build" task won't have access to the Internet because it uses the "bridge" network in order to have Internet access during build. You may pass "!bridge" to the GATEWAY_NETWORKS ENV in order to protect all but the "bridge" network, for example.

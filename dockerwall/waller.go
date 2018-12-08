@@ -17,9 +17,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/gorilla/mux"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //Waller Label based network filter constraints
@@ -27,28 +24,11 @@ type Waller struct {
 	dockerClient       *client.Client
 	useDefaultNetworks bool
 	gatewayNetworks    []string
+	currentMetrics     string
 	m                  *sync.Mutex
 }
 
-var networkBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
-	Name: "network_bytes",
-	Help: "Network bytes",
-}, []string{
-	"container_name",
-	"effect",
-})
-
-var networkPackets = prometheus.NewCounterVec(prometheus.CounterOpts{
-	Name: "network_packets",
-	Help: "Network packets",
-}, []string{
-	"container_name",
-	"effect",
-})
-
 func (s *Waller) init() {
-	prometheus.MustRegister(networkBytes)
-	prometheus.MustRegister(networkPackets)
 }
 
 func (s *Waller) startup() error {
@@ -64,8 +44,8 @@ func (s *Waller) startup() error {
 	go s.metrics()
 
 	router := mux.NewRouter()
-	router.Handle("/metrics", promhttp.Handler())
-	err = http.ListenAndServe("0.0.0.0:8000", router)
+	router.HandleFunc("/metrics", s.MetricsHandler).Methods("GET")
+	err = http.ListenAndServe("0.0.0.0:50000", router)
 	if err != nil {
 		logrus.Errorf("Error while listening requests: %s", err)
 		os.Exit(1)
@@ -119,14 +99,91 @@ func (s *Waller) dockerEvents() {
 	}
 }
 
+// MetricsHandler return current metrics
+func (s *Waller) MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte(s.currentMetrics))
+}
+
 func (s *Waller) metrics() {
+	first := true
 	for {
+		if !first {
+			time.Sleep(3000 * time.Millisecond)
+		}
+		first = false
+
 		s.m.Lock()
-		// networkBytes.WithLabelValues()
-		// networkPackets.WithLabelValues()
+
+		_, containerNames, err := s.containerGwIPs()
+		if err != nil {
+			logrus.Warnf("Could not get container names. err=%s", err)
+			continue
+		}
+
+		metricsAllow, err := s.chainMetrics("DOCKERWALL-ALLOW", containerNames)
+		if err != nil {
+			logrus.Warnf("Error generating metrics (ALLOW). err=%s", err)
+			continue
+		}
+		metricsDeny, err := s.chainMetrics("DOCKERWALL-DENY", containerNames)
+		if err != nil {
+			logrus.Warnf("Error generating metrics (DENY). err=%s", err)
+			continue
+		}
+
+		s.currentMetrics = metricsAllow + metricsDeny
 		s.m.Unlock()
-		time.Sleep(10000 * time.Millisecond)
 	}
+}
+
+//returns int[packet_count, bytes_total] string[containerId, effect]
+func (s *Waller) chainMetrics(chainName string, containers map[string]string) (string, error) {
+	linesStr, err := ExecShellf("iptables -L %s -v -x", chainName)
+	if err != nil {
+		return "", err
+	}
+	lines, err := linesToArray(linesStr)
+	if err != nil {
+		return "", err
+	}
+
+	metrics := ""
+	spaceregex := regexp.MustCompile(`\s+`)
+	for _, line := range lines {
+		if line == "\n" {
+			continue
+		}
+
+		containeridregex := regexp.MustCompile("match-set ([-0-9a-z]+)-dst dst")
+
+		if containeridregex.MatchString(line) {
+			mcid := containeridregex.FindStringSubmatch(line)
+			if len(mcid) != 2 {
+				logrus.Warnf("Could not find container id in line %s", line)
+				continue
+			}
+			containerid := mcid[1]
+			containerName := containers[containerid]
+
+			line = spaceregex.ReplaceAllString(line, " ")
+			fields := strings.Split(line, " ")
+			action := strings.ToLower(fields[3])
+
+			metricName := "dockerwall_container_packets"
+			m := "#HELP " + metricName + "Number of packets originated by a container\n"
+			m = m + "#TYPE " + metricName + " counter\n"
+			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, action, fields[1])
+
+			metricName = "dockerwall_container_bytes"
+			m = m + "#HELP " + metricName + "Total bytes originated by a container\n"
+			m = m + "#TYPE " + metricName + " counter\n"
+			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, action, fields[2])
+
+			metrics = metrics + m
+		}
+	}
+	logrus.Debugf("Current metrics: \n%s", metrics)
+	return metrics, nil
 }
 
 func (s *Waller) processMessages(chanMessages <-chan events.Message) {
@@ -216,7 +273,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	logrus.Debugf("Verifying IPTABLES rules for container %s", cid)
 
 	//CONTAINER GW IP
-	gwIps, err := s.containerGwIPs()
+	gwIps, _, err := s.containerGwIPs()
 	if err != nil {
 		return err
 	}
@@ -322,7 +379,7 @@ func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) err
 }
 
 func (s *Waller) removeOrphans(containers []types.Container) error {
-	currentContainers, err := s.containerGwIPs()
+	currentContainers, _, err := s.containerGwIPs()
 	if err != nil {
 		return err
 	}
@@ -400,14 +457,15 @@ func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (
 	return false, nil
 }
 
-func (s *Waller) containerGwIPs() (map[string][]string, error) {
+func (s *Waller) containerGwIPs() (map[string][]string, map[string]string, error) {
 	containersGwIP := map[string][]string{}
+	containerNames := map[string]string{}
 	for _, gwNetwork := range s.gatewayNetworks {
 		// logrus.Debugf("Discovering container ips for network %s", gwNetwork)
 		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
 			logrus.Errorf("Error while listing container instances attached to network %s. err=%s", gwNetwork, err)
-			return containersGwIP, err
+			return containersGwIP, containerNames, err
 		}
 		for k, cont := range netins.Containers {
 			k = trunc(k, 18)
@@ -415,9 +473,10 @@ func (s *Waller) containerGwIPs() (map[string][]string, error) {
 				containersGwIP[k] = make([]string, 0)
 			}
 			containersGwIP[k] = append(containersGwIP[k], cont.IPv4Address)
+			containerNames[k] = cont.Name
 		}
 	}
-	return containersGwIP, nil
+	return containersGwIP, containerNames, nil
 }
 
 func (s *Waller) updateIptablesChains() error {
@@ -513,6 +572,10 @@ func (s *Waller) updateIptablesChains() error {
 			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
 		}
 		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-ALLOW")
+		if err != nil {
+			return err
+		}
+		_, err = ExecShell("iptables -I DOCKERWALL-ALLOW -m state --state ESTABLISHED,RELATED -j ACCEPT")
 		if err != nil {
 			return err
 		}

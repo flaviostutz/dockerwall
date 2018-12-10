@@ -45,15 +45,26 @@ func main() {
 		return
 	}
 
-	gn := make([]string, 0)
+	gatewayNets := make([]string, 0)
+	skipNets := make([]string, 0)
 	if *gatewayNetworks != "" {
-		gn = strings.Split(*gatewayNetworks, ",")
+		gn := strings.Split(*gatewayNetworks, ",")
+		for _, v := range gn {
+			if len(v) > 1 {
+				if v[0] == '!' {
+					skipNets = append(skipNets, v[1:])
+				} else {
+					gatewayNets = append(gatewayNets, v)
+				}
+			}
+		}
 	}
 
 	swarmWaller := Waller{
 		dockerClient:       cli,
-		useDefaultNetworks: (*gatewayNetworks == ""),
-		gatewayNetworks:    gn,
+		useDefaultNetworks: (len(gatewayNets) == 0),
+		gatewayNetworks:    gatewayNets,
+		skipNetworks:       skipNets,
 		currentMetrics:     "",
 		m:                  &sync.Mutex{},
 	}

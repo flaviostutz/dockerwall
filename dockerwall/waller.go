@@ -24,6 +24,7 @@ type Waller struct {
 	dockerClient       *client.Client
 	useDefaultNetworks bool
 	gatewayNetworks    []string
+	skipNetworks       []string
 	currentMetrics     string
 	m                  *sync.Mutex
 }
@@ -253,7 +254,11 @@ func (s *Waller) updateGatewayNetworks() error {
 		}
 		s.gatewayNetworks = make([]string, 0)
 		for _, bn := range bnetworks {
-			s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
+			if !contains(s.skipNetworks, bn.Name) {
+				s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
+			} else {
+				logrus.Debugf("Network '%s' won't be managed", bn.Name)
+			}
 		}
 	}
 	logrus.Debugf("Bridge networks that will be managed: %v", s.gatewayNetworks)

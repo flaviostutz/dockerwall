@@ -43,7 +43,7 @@ services:
 * Run ```docker-compose up``` and observe that pings will stop working (hopefully!)
 
 # ENV configurations
-  * GATEWAY_NETWORKS - Docker networks from which traffic will be filtered by DockerWall. If empty, all "bridge" networks will be discovered and used for filtering.
+  * GATEWAY_NETWORKS - Docker networks from which traffic will be filtered by DockerWall. If empty, all "bridge" networks will be discovered and used for filtering. If you use ! in front of a network name, it won't be managed by DockerWall and all traffic will be allowed through this bridge.
 
 # Prometheus metrics
 
@@ -51,8 +51,8 @@ services:
 
 # Swarm Clusters
 
-   * Run DockerWall with "global" placement, so that all managers and workers of the cluster will have an instance of DockerWall, controling access of all containers in the cluster
+   * You cannot run DockerWall as a Swarm service because Swarm doesn't allow you to run in network_mode host, which is required. Run with plain docker-compose on each manager/worker host.
 
 # Practical Considerations
 
-   * If you don't specify DockerWall gateway networks, all bridge networks will be managed. It means that even the "docker build" task won't have access to the Internet because it uses the "bridge" network in order to have Internet access during build. You may pass "!bridge" to the GATEWAY_NETWORKS ENV in order to protect all but the "bridge" network, for example.
+   * If you don't specify DockerWall gateway networks, all bridge networks will be managed. It means that even the "docker build" task won't have access to the Internet because it uses the "bridge" network in order to have Internet access during build. You may set ENV "GATEWAY_NETWORKS=!bridge" in order to protect all but the "bridge" network, so that regular builds will work.

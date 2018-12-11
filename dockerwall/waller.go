@@ -81,7 +81,7 @@ func (s *Waller) sanitizer() {
 		}
 		logrus.Infof("Iptables orphan rules sanitizer run")
 		s.m.Unlock()
-		time.Sleep(30000 * time.Millisecond)
+		time.Sleep(300000 * time.Millisecond)
 	}
 }
 
@@ -593,7 +593,7 @@ func (s *Waller) updateIptablesChains() error {
 		if err != nil {
 			logrus.Debugf("Ignoring error on chain creation (it may already exist). err=%s", err)
 		}
-		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-DENY")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
 		if err != nil {
 			return err
 		}
@@ -606,15 +606,10 @@ func (s *Waller) updateIptablesChains() error {
 		if err != nil {
 			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
 		}
-		_, err = ExecShell("iptables -I DOCKER-USER -j DOCKERWALL-ALLOW")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
 		if err != nil {
 			return err
 		}
-		_, err = ExecShell("iptables -I DOCKERWALL-ALLOW -m state --state ESTABLISHED,RELATED -j ACCEPT")
-		if err != nil {
-			return err
-		}
-		logrus.Info("DOCKERWALL-ALLOW chain created successfully")
 	}
 
 	return nil

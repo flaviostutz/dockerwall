@@ -9,7 +9,7 @@ services:
       - NET_ADMIN
     network_mode: host
     environment:
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=info
       - GATEWAY_NETWORKS=!bridge
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

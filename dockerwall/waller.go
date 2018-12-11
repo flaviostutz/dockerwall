@@ -79,8 +79,9 @@ func (s *Waller) sanitizer() {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
 		}
+		logrus.Infof("Iptables orphan rules sanitizer run")
 		s.m.Unlock()
-		time.Sleep(300000 * time.Millisecond)
+		time.Sleep(30000 * time.Millisecond)
 	}
 }
 
@@ -218,6 +219,7 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 						logrus.Debugf("Container already known. Updating ipset outbound ips")
 						s.updateIpsetIps(ipsetName, container)
 					}
+					logrus.Infof("Ipset group %s updated", ipsetName)
 
 				} else {
 					logrus.Warnf("Container %s not found", message.Actor.ID)
@@ -229,11 +231,13 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 				if err != nil {
 					logrus.Warnf("Error clearing ipset group %s", ipsetName)
 				}
+				logrus.Infof("Ipset group %s cleared", ipsetName)
 			}
 
 		} else if message.Type == "network" {
 			if message.Action == "create" || message.Action == "destroy" {
 				s.updateGatewayNetworks()
+				logrus.Info("Gateway network rules updated")
 			}
 		}
 		s.m.Unlock()
@@ -310,6 +314,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			if err != nil {
 				return err
 			}
+			logrus.Infof("DOCKERWALL-ALLOW rule for %s created succesfully", ipsetName)
 		}
 
 		//IPTABLES DENY
@@ -323,6 +328,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			if err != nil {
 				return err
 			}
+			logrus.Infof("DOCKERWALL-DENY rule for %s created succesfully", ipsetName)
 		}
 	}
 
@@ -388,26 +394,44 @@ func (s *Waller) removeOrphans(containers []types.Container) error {
 	if err != nil {
 		return err
 	}
-	err = s.removeOrphanRules("DOCKERWALL-ALLOW", currentContainers)
-	if err != nil {
-		return err
-	}
-	err = s.removeOrphanRules("DOCKERWALL-DENY", currentContainers)
-	if err != nil {
-		return err
-	}
-	return nil
-}
 
-func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]string) error {
-	logrus.Debugf("Retrieving iptables rules for %s", chain)
-	rules, err1 := ExecShellf("iptables -L %s -v --line-number", chain)
+	//REMOVE IPTABLES RULES
+	ocid1, err1 := s.removeOrphanRules("DOCKERWALL-ALLOW", currentContainers)
 	if err1 != nil {
 		return err1
 	}
-	rul, err2 := linesToArray(rules)
+	ocid2, err2 := s.removeOrphanRules("DOCKERWALL-DENY", currentContainers)
 	if err2 != nil {
 		return err2
+	}
+
+	//REMOVE IPSET GROUPS, BECAUSE THEY HAVE NO DEPENDENCIES NOW
+	orphanCids := append(ocid1, ocid2...)
+	orphanCids = unique(orphanCids)
+	for _, cid := range orphanCids {
+		ipsetName := cid + "-dst"
+		logrus.Debugf("Removing ipset group %s", ipsetName)
+		_, err5 := ExecShellf("ipset destroy %s", ipsetName)
+		if err5 != nil {
+			return fmt.Errorf("Error removing ipset group %s. err=%s", ipsetName, err5)
+		} else {
+			logrus.Infof("Ipset group %s removed successfully", ipsetName)
+		}
+	}
+
+	return nil
+}
+
+//returns list of detected orphan rules container ids in iptables
+func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]string) ([]string, error) {
+	logrus.Debugf("Retrieving iptables rules for %s", chain)
+	rules, err1 := ExecShellf("iptables -L %s -v --line-number", chain)
+	if err1 != nil {
+		return nil, err1
+	}
+	rul, err2 := linesToArray(rules)
+	if err2 != nil {
+		return nil, err2
 	}
 
 	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst")
@@ -416,6 +440,7 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]
 	//invert rules order so that we can remove rules without changing the line numbers
 	rul = reverseArray(rul)
 
+	ocids := make([]string, 0)
 	for _, v := range rul {
 		ss := cidregex.FindStringSubmatch(v)
 		if len(ss) == 2 {
@@ -427,12 +452,15 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]
 				ls := lineregex.FindStringSubmatch(v)
 				if len(ls) == 2 {
 					line := ls[1]
+
+					//IPTABLES RULES
 					logrus.Debugf("Found orphan rule %s for container %s. Removing it.", line, cid)
 					_, err4 := ExecShellf("iptables -D %s %s", chain, line)
 					if err4 != nil {
-						logrus.Debugf("Error removing rule on line %s for container %s. err=%s", line, cid, err4)
+						return nil, fmt.Errorf("Error removing rule on line %s for container %s. err=%s", line, cid, err4)
 					} else {
-						logrus.Debug("Rule removed successfully")
+						ocids = append(ocids, cid)
+						logrus.Infof("Rule for %s removed successfully", cid)
 					}
 				}
 			} else {
@@ -440,7 +468,7 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]
 			}
 		}
 	}
-	return nil
+	return ocids, nil
 }
 
 func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (bool, error) {
@@ -549,8 +577,9 @@ func (s *Waller) updateIptablesChains() error {
 	logrus.Debug("Commiting ipset group used for gw network subnets")
 	_, err = ExecShellf("ipset swap %s %s", ipsetNameTemp, ipsetName)
 	if err != nil {
-		logrus.Warnf("Error updating ipset used for network subnets. err=%s", err)
+		return fmt.Errorf("Error updating ipset used for network subnets. err=%s", err)
 	}
+	logrus.Info("ipset groups for managed networks created successfully")
 
 	if !denyChainFound {
 		logrus.Debugf("Adding default DROP policy for packets from gateway networks")
@@ -568,6 +597,7 @@ func (s *Waller) updateIptablesChains() error {
 		if err != nil {
 			return err
 		}
+		logrus.Info("DOCKERWALL-DENY chain created successfully")
 	}
 
 	if !allowChainFound {
@@ -584,6 +614,7 @@ func (s *Waller) updateIptablesChains() error {
 		if err != nil {
 			return err
 		}
+		logrus.Info("DOCKERWALL-ALLOW chain created successfully")
 	}
 
 	return nil

@@ -602,14 +602,22 @@ func (s *Waller) updateIptablesChains() error {
 
 	if !allowChainFound {
 		logrus.Debug("DOCKERWALL-ALLOW jump not found in chain DOCKER-USER. Creating it")
+
 		_, err = ExecShell("iptables -N DOCKERWALL-ALLOW")
 		if err != nil {
 			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
 		}
+
 		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
 		if err != nil {
 			return err
 		}
+
+		_, err = ExecShell("iptables -I DOCKERWALL-ALLOW -m state --state ESTABLISHED -m set --match-set managed-subnets src -j ACCEPT")
+		if err != nil {
+			return err
+		}
+
 	}
 
 	return nil

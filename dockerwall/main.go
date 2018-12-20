@@ -30,7 +30,7 @@ func main() {
 		logrus.SetLevel(logrus.InfoLevel)
 	}
 
-	logrus.Infof("====Starting Dockerwall %s====")
+	logrus.Infof("====Starting Dockerwall====")
 
 	cli, err := client.NewClientWithOpts(client.WithVersion("1.38"))
 	if err != nil {

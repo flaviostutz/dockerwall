@@ -34,7 +34,7 @@ func (s *Waller) init() {
 }
 
 func (s *Waller) startup() error {
-	logrus.Infof("Performing initial full filter updates for all current containers")
+	logrus.Infof("Performing startup operations")
 
 	err := s.updateGatewayNetworks()
 	if err != nil {
@@ -60,6 +60,11 @@ func (s *Waller) sanitizer() {
 	logrus.Debugf("Starting sanitizer")
 	for {
 		s.m.Lock()
+
+		logrus.Debugf("Refreshing basic network and iptables rules")
+		s.updateGatewayNetworks()
+
+		logrus.Debugf("Refreshing container specific rules")
 		containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
 		if err != nil {
 			logrus.Errorf("Error listing containers. err=%s", err)
@@ -530,33 +535,23 @@ func (s *Waller) containerGwIPs() (map[string][]string, map[string]string, error
 }
 
 func (s *Waller) updateIptablesChains() error {
-	_, err := ExecShell("iptables -L DOCKER-USER")
-	if err != nil {
-		return fmt.Errorf("Error querying DOCKER-USER Iptables chain. Check if both Iptables and Docker are installed on this host. err=%s", err)
-	}
+	logrus.Debugf("updateIptablesChains()")
 
 	//check existing rules
-	allowChainFound := false
-	denyChainFound := false
 	rules, err1 := ExecShell("iptables -L DOCKER-USER")
 	if err1 != nil {
-		return err1
+		return fmt.Errorf("Error querying DOCKER-USER Iptables chain. Check if both Iptables and Docker are installed on this host. err=%s", err1)
 	}
 	rul, err2 := linesToArray(rules)
 	if err2 != nil {
 		return err2
 	}
-	for _, v := range rul {
-		if strings.Contains(v, "DOCKERWALL-ALLOW") {
-			allowChainFound = true
-		} else if strings.Contains(v, "DOCKERWALL-DENY") {
-			denyChainFound = true
-		}
-	}
+
+	previousRulesCount := len(rul) - 2
 
 	logrus.Debug("Updating/creating ipset group for gateway subnets")
 	ipsetName := "managed-subnets"
-	_, err = ExecShellf("ipset list | grep %s", ipsetName)
+	_, err := ExecShellf("ipset list | grep %s", ipsetName)
 	if err != nil {
 		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetName, err)
 		_, err := ExecShellf("ipset -N %s nethash", ipsetName)
@@ -598,43 +593,50 @@ func (s *Waller) updateIptablesChains() error {
 	}
 	logrus.Info("ipset groups for managed networks created successfully")
 
-	if !denyChainFound {
-		logrus.Debugf("Adding default DROP policy for packets from gateway networks")
-		_, err = ExecShellf("iptables -I DOCKER-USER -m set --match-set %s src -j DROP", ipsetName)
-		if err != nil {
-			return err
-		}
-
-		logrus.Debug("DOCKERWALL-DENY jump not found in chain DOCKER-USER. Creating it")
-		_, err = ExecShell("iptables -N DOCKERWALL-DENY")
-		if err != nil {
-			logrus.Debugf("Ignoring error on chain creation (it may already exist). err=%s", err)
-		}
-		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
-		if err != nil {
-			return err
-		}
-		logrus.Info("DOCKERWALL-DENY chain created successfully")
+	logrus.Debug("Creating DOCKERWALL-DENY and DOCKERWALL-ALLOW chains")
+	_, err = ExecShell("iptables -N DOCKERWALL-ALLOW")
+	if err != nil {
+		logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
+	}
+	_, err = ExecShell("iptables -N DOCKERWALL-DENY")
+	if err != nil {
+		logrus.Debugf("Ignoring error on chain creation (it may already exist). err=%s", err)
 	}
 
-	if !allowChainFound {
-		logrus.Debug("DOCKERWALL-ALLOW jump not found in chain DOCKER-USER. Creating it")
+	logrus.Debugf("Adding default DROP policy for packets from gateway networks")
+	_, err = ExecShellf("iptables -I DOCKER-USER -m set --match-set %s src -j DROP", ipsetName)
+	if err != nil {
+		return err
+	}
+	logrus.Debug("Adding DOCKERWALL-DENY jump to chain DOCKER-USER")
+	_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
+	if err != nil {
+		return err
+	}
 
-		_, err = ExecShell("iptables -N DOCKERWALL-ALLOW")
-		if err != nil {
-			logrus.Debugf("Ignoring error on chain creating (it may already exist). err=%s", err)
-		}
+	logrus.Debug("Adding DOCKERWALL-ALLOW jump to chain DOCKER-USER")
+	_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
+	if err != nil {
+		return err
+	}
 
-		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
-		if err != nil {
-			return err
-		}
-
+	rules, err1 = ExecShell("iptables -L DOCKERWALL-ALLOW")
+	if err1 != nil {
+		return err1
+	}
+	if !strings.Contains(rules, "ACCEPT     all  --  anywhere             anywhere             state ESTABLISHED match-set managed-subnets src") {
 		_, err = ExecShell("iptables -I DOCKERWALL-ALLOW -m state --state ESTABLISHED -m set --match-set managed-subnets src -j ACCEPT")
 		if err != nil {
 			return err
 		}
+	}
 
+	logrus.Debugf("Removing previous rules from DOCKER-USER chain")
+	for i := previousRulesCount; i > 0; i-- {
+		_, err = ExecShellf("iptables -D DOCKER-USER %d", i+3)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

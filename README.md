@@ -55,4 +55,7 @@ services:
 
 # Practical Considerations
 
+   * If you stop Dockerwall containers, no iptables or ipset rules will be changed, so that you can update Dockerwall and no running containers will be affected. If you need to completelly disable Dockerwall DROP/ALLOW effects, stop the container and run ```iptables -F DOCKER-USER```
+
    * If you don't specify DockerWall gateway networks, all bridge networks will be managed. It means that even the "docker build" task won't have access to the Internet because it uses the "bridge" network in order to have Internet access during build. You may set ENV "GATEWAY_NETWORKS=!bridge" in order to protect all but the "bridge" network, so that regular builds will work.
+

@@ -14,7 +14,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
-  test:
+  test1:
     image: busybox:1.29
     command: sh -c "ping www.google.com"
     labels:

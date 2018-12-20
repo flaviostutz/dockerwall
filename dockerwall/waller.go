@@ -122,18 +122,12 @@ func (s *Waller) metrics() {
 
 		s.m.Lock()
 
-		_, containerNames, err := s.containerGwIPs()
-		if err != nil {
-			logrus.Warnf("Could not get container names. err=%s", err)
-			continue
-		}
-
-		metricsAllow, err := s.chainMetrics("DOCKERWALL-ALLOW", containerNames)
+		metricsAllow, err := s.chainMetrics("DOCKERWALL-ALLOW")
 		if err != nil {
 			logrus.Warnf("Error generating metrics (ALLOW). err=%s", err)
 			continue
 		}
-		metricsDeny, err := s.chainMetrics("DOCKERWALL-DENY", containerNames)
+		metricsDeny, err := s.chainMetrics("DOCKERWALL-DENY")
 		if err != nil {
 			logrus.Warnf("Error generating metrics (DENY). err=%s", err)
 			continue
@@ -145,7 +139,7 @@ func (s *Waller) metrics() {
 }
 
 //returns int[packet_count, bytes_total] string[containerId, effect]
-func (s *Waller) chainMetrics(chainName string, containers map[string]string) (string, error) {
+func (s *Waller) chainMetrics(chainName string) (string, error) {
 	linesStr, err := ExecShellf("iptables -L %s -v -x", chainName)
 	if err != nil {
 		return "", err
@@ -154,6 +148,8 @@ func (s *Waller) chainMetrics(chainName string, containers map[string]string) (s
 	if err != nil {
 		return "", err
 	}
+
+	containers, err := s.containerList()
 
 	metrics := ""
 	spaceregex := regexp.MustCompile(`\s+`)
@@ -171,7 +167,11 @@ func (s *Waller) chainMetrics(chainName string, containers map[string]string) (s
 				continue
 			}
 			containerid := mcid[1]
-			containerName := containers[containerid]
+			containerName := containerid
+			if len(containers[containerid].Names) > 0 {
+				containerName = strings.Replace(containers[containerid].Names[0], "/", "", 1)
+			}
+			imageName := containers[containerid].Image
 
 			line = spaceregex.ReplaceAllString(line, " ")
 			fields := strings.Split(line, " ")
@@ -180,12 +180,12 @@ func (s *Waller) chainMetrics(chainName string, containers map[string]string) (s
 			metricName := "dockerwall_container_packets"
 			m := "#HELP " + metricName + "Number of packets originated by a container\n"
 			m = m + "#TYPE " + metricName + " counter\n"
-			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, action, fields[1])
+			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, imageName, action, fields[1])
 
 			metricName = "dockerwall_container_bytes"
 			m = m + "#HELP " + metricName + "Total bytes originated by a container\n"
 			m = m + "#TYPE " + metricName + " counter\n"
-			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, action, fields[2])
+			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, imageName, action, fields[2])
 
 			metrics = metrics + m
 		}
@@ -532,6 +532,20 @@ func (s *Waller) containerGwIPs() (map[string][]string, map[string]string, error
 		}
 	}
 	return containersGwIP, containerNames, nil
+}
+
+func (s *Waller) containerList() (map[string]types.Container, error) {
+	containers := make(map[string]types.Container)
+	contlist, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+	if err != nil {
+		logrus.Errorf("Error while listing container instances. err=%s", err)
+		return containers, err
+	}
+	for _, cont := range contlist {
+		id := trunc(cont.ID, 18)
+		containers[id] = cont
+	}
+	return containers, nil
 }
 
 func (s *Waller) updateIptablesChains() error {

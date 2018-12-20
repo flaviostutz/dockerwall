@@ -18,11 +18,11 @@ services:
     image: busybox:1.29
     command: sh -c "ping www.google.com"
     labels:
-      - "dockerwall.outbound=www.yahoo.com,www.google.com"
+      - "dockerwall.outbound=www.yahoo.com,www1.google.com"
 
   prometheus:
     image: flaviostutz/prometheus
     ports:
       - 9090:9090
     environment:
-      - STATIC_SCRAPE_TARGETS=dockerwall@192.168.20.18:50000
+      - STATIC_SCRAPE_TARGETS=dockerwall@172.20.10.10:50000

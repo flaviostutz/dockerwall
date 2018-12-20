@@ -24,6 +24,7 @@ type Waller struct {
 	dockerClient       *client.Client
 	useDefaultNetworks bool
 	gatewayNetworks    []string
+	defaultOutbound    string
 	skipNetworks       []string
 	currentMetrics     string
 	m                  *sync.Mutex
@@ -337,10 +338,10 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 
 func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) error {
 	//OUTBOUND DOMAIN IPs
-	domainNames := ""
+	domainNames := s.defaultOutbound
 	for k, v := range container.Labels {
 		if k == "dockerwall.outbound" {
-			domainNames = v
+			domainNames = domainNames + "," + v
 			break
 		}
 	}
@@ -356,6 +357,21 @@ func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) err
 		}
 	}
 
+	//if domain has '_dns_', lookup dns server IP
+	if strings.Contains(domainNames, "_dns_") {
+		nsoutput, err := ExecShellf("dig 8.8.8.8")
+		if err != nil {
+			logrus.Debugf("Couldn't discover DNS server ip. err=%s", err)
+		} else {
+			nsserverregex := regexp.MustCompile("\\(([0-9\\.]{7,15})\\)")
+			nsserver := nsserverregex.FindStringSubmatch(nsoutput)
+			if len(nsserver) > 1 {
+				domainNames = domainNames + "," + nsserver[1]
+			}
+		}
+	}
+
+	//add plain ip references
 	ipregex, _ := regexp.Compile("([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3})")
 	ips := ipregex.FindAllString(domainNames, -1)
 	ipstr := ""
@@ -371,6 +387,7 @@ func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) err
 		}
 	}
 
+	//add domain name references
 	domainregex, _ := regexp.Compile("([a-zA-Z0-9-\\.]+)")
 	domains := domainregex.FindAllString(domainNames, -1)
 	domainsstr := ""

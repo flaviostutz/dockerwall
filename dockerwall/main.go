@@ -10,12 +10,10 @@ import (
 	"github.com/docker/docker/client"
 )
 
-const VERSION = "1.0.0-beta"
-
 func main() {
-	versionFlag := flag.Bool("version", false, "Print version")
 	logLevel := flag.String("loglevel", "debug", "debug, info, warning, error")
 	gatewayNetworks := flag.String("gateway-networks", "", "Docker networks whose gateway access will be managed by DockerWall. If empty, all bridge networks will be used")
+	defaultOutbound := flag.String("default-outbound", "_dns_", "Domains and IPs that will be allowed by default. Use '_dns_' to allow access to local dns server ip")
 	flag.Parse()
 
 	switch *logLevel {
@@ -32,12 +30,7 @@ func main() {
 		logrus.SetLevel(logrus.InfoLevel)
 	}
 
-	if *versionFlag {
-		logrus.Infof("%s\n", VERSION)
-		return
-	}
-
-	logrus.Infof("====Starting Dockerwall %s====", VERSION)
+	logrus.Infof("====Starting Dockerwall %s====")
 
 	cli, err := client.NewClientWithOpts(client.WithVersion("1.38"))
 	if err != nil {
@@ -64,6 +57,7 @@ func main() {
 		dockerClient:       cli,
 		useDefaultNetworks: (len(gatewayNets) == 0),
 		gatewayNetworks:    gatewayNets,
+		defaultOutbound:    *defaultOutbound,
 		skipNetworks:       skipNets,
 		currentMetrics:     "",
 		m:                  &sync.Mutex{},

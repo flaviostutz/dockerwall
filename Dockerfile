@@ -30,6 +30,7 @@ COPY --from=BUILD /go/bin/* /bin/
 ADD startup.sh /
 
 ENV GATEWAY_NETWORKS ""
+ENV DEFAULT_OUTBOUND "_dns_"
 
 VOLUME [ "/var/run/docker.sock" ]
 EXPOSE 50000

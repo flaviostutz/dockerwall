@@ -48,10 +48,12 @@ services:
 # Prometheus metrics
 
    * Metrics exposed at http://localhost:50000/metrics
+   * Number of packets and bytes dropped/accepted per container etc
 
 # Swarm Clusters
 
    * You cannot run DockerWall as a Swarm service because Swarm doesn't allow you to run in network_mode host, which is required. Run with plain docker-compose on each manager/worker host.
+   * Thou, DockerWall will manage correctly all container instances from Swarm Tasks (we are using it this way!)
 
 # Practical Considerations
 

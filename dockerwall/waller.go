@@ -178,12 +178,12 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 			action := strings.ToLower(fields[3])
 
 			metricName := "dockerwall_container_packets"
-			m := "#HELP " + metricName + "Number of packets originated by a container\n"
+			m := "#HELP " + metricName + " Number of packets originated by a container\n"
 			m = m + "#TYPE " + metricName + " counter\n"
 			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, imageName, action, fields[1])
 
 			metricName = "dockerwall_container_bytes"
-			m = m + "#HELP " + metricName + "Total bytes originated by a container\n"
+			m = m + "#HELP " + metricName + " Total bytes originated by a container\n"
 			m = m + "#TYPE " + metricName + " counter\n"
 			m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",action=\"%s\"} %s\n\n", metricName, containerid, containerName, imageName, action, fields[2])
 

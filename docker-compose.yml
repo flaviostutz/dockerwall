@@ -10,19 +10,21 @@ services:
     network_mode: host
     environment:
       - LOG_LEVEL=debug
-      - GATEWAY_NETWORKS=!bridge
+      - GATEWAY_NETWORKS=!bridge0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
   test1:
     image: busybox:1.29
-    command: sh -c "ping www.google.com"
+    # command: sh -c "ping www.uol.com.br"
+    command: sh -c "wget www.uol.com.br"
     labels:
-      - "dockerwall.outbound=www.yahoo.com,www1.google.com"
+      - "dockerwall.outbound=www.yahoo.com,www.google.com"
 
   prometheus:
     image: flaviostutz/prometheus
+    network_mode: host
     ports:
       - 9090:9090
     environment:
-      - STATIC_SCRAPE_TARGETS=dockerwall@172.20.10.10:50000
+      - STATIC_SCRAPE_TARGETS=dockerwall@localhost:50000

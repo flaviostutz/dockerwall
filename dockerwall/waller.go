@@ -16,6 +16,9 @@ import (
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	nflog "github.com/florianl/go-nflog"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/gorilla/mux"
 )
 
@@ -27,6 +30,7 @@ type Waller struct {
 	defaultOutbound    string
 	skipNetworks       []string
 	currentMetrics     string
+	metricsDropHosts   map[string]map[string]int
 	m                  *sync.Mutex
 }
 
@@ -36,6 +40,8 @@ func (s *Waller) init() {
 func (s *Waller) startup() error {
 	logrus.Infof("Performing startup operations")
 
+	s.metricsDropHosts = make(map[string]map[string]int)
+
 	err := s.updateGatewayNetworks()
 	if err != nil {
 		return err
@@ -44,6 +50,7 @@ func (s *Waller) startup() error {
 	go s.sanitizer()
 	go s.dockerEvents()
 	go s.metrics()
+	go s.nflog()
 
 	router := mux.NewRouter()
 	router.HandleFunc("/metrics", s.MetricsHandler).Methods("GET")
@@ -133,7 +140,26 @@ func (s *Waller) metrics() {
 			continue
 		}
 
-		s.currentMetrics = metricsAllow + metricsDeny
+		//dropped hosts metrics
+		metricsDrop := ""
+		containers, err := s.containerList()
+		for containerid, hostsCounter := range s.metricsDropHosts {
+			containerName := containerid
+			if len(containers[containerid].Names) > 0 {
+				containerName = strings.Replace(containers[containerid].Names[0], "/", "", 1)
+			}
+			imageName := containers[containerid].Image
+			for destIPPortProto, counter := range hostsCounter {
+				dest := strings.Split(destIPPortProto, ":")
+				metricName := "dockerwall_dropped_packets"
+				m := "#HELP " + metricName + " Number of packets denied by Dockerwall\n"
+				m = m + "#TYPE " + metricName + " counter\n"
+				m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",destination=\"%s\",port=\"%s\",protocol=\"%s\"} %d\n\n", metricName, containerid, containerName, imageName, dest[0], dest[1], dest[2], counter)
+				metricsDrop = metricsDrop + m
+			}
+		}
+
+		s.currentMetrics = metricsAllow + metricsDeny + metricsDrop
 		s.m.Unlock()
 	}
 }
@@ -177,6 +203,10 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 			fields := strings.Split(line, " ")
 			action := strings.ToLower(fields[3])
 
+			if action != "drop" && action != "accept" {
+				continue
+			}
+
 			metricName := "dockerwall_container_packets"
 			m := "#HELP " + metricName + " Number of packets originated by a container\n"
 			m = m + "#TYPE " + metricName + " counter\n"
@@ -190,8 +220,83 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 			metrics = metrics + m
 		}
 	}
-	logrus.Debugf("Current metrics: \n%s", metrics)
+	// logrus.Debugf("Current metrics: \n%s", metrics)
 	return metrics, nil
+}
+
+func (s *Waller) nflog() {
+	logrus.Debugf("Starting nflog packet listener")
+
+	config := nflog.Config{
+		Group:    32,
+		Copymode: nflog.NfUlnlCopyPacket,
+	}
+
+	nf, err := nflog.Open(&config)
+	if err != nil {
+		logrus.Errorf("Could not open nflog socket: %s", err)
+		return
+	}
+	defer nf.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fn := func(m nflog.Msg) int {
+		// logrus.Infof("%s %v\n", m[nflog.AttrPrefix], m[nflog.AttrPayload])
+		containerID := m[nflog.AttrPrefix].(string)
+		payload := m[nflog.AttrPayload].([]byte)
+		packet := gopacket.NewPacket(payload, layers.LayerTypeIPv4, gopacket.Default)
+		ip4Layer := packet.Layer(layers.LayerTypeIPv4)
+
+		if ip4Layer != nil {
+			ipv4, _ := ip4Layer.(*layers.IPv4)
+			// logrus.Debugf("DROP src host %d to dst host %d", ipv4.SrcIP, ipv4.DstIP)
+
+			port := "0"
+			protocol := "-"
+			for _, layer := range packet.Layers() {
+				if layer.LayerType() == layers.LayerTypeTCP {
+					tcpLayer := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+					protocol = "tcp"
+					port = fmt.Sprintf("%d", tcpLayer.DstPort)
+					break
+				} else if layer.LayerType() == layers.LayerTypeUDP {
+					udpLayer := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+					protocol = "udp"
+					port = fmt.Sprintf("%d", udpLayer.DstPort)
+					break
+				}
+			}
+
+			destinationIP := fmt.Sprintf("%d.%d.%d.%d:%s:%s", ipv4.DstIP[0], ipv4.DstIP[1], ipv4.DstIP[2], ipv4.DstIP[3], port, protocol)
+
+			dropHosts, exists := s.metricsDropHosts[containerID]
+			if !exists {
+				s.metricsDropHosts[containerID] = make(map[string]int)
+				dropHosts = s.metricsDropHosts[containerID]
+			}
+
+			_, exists = dropHosts[destinationIP]
+			if !exists {
+				dropHosts[destinationIP] = 0
+			}
+			dropHosts[destinationIP] = dropHosts[destinationIP] + 1
+
+		} else {
+			logrus.Warnf("Could not get IPv4 Layer from NFLOG message")
+		}
+		return 0
+	}
+
+	err = nf.Register(ctx, fn)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	<-ctx.Done()
+	logrus.Warnf("NFLog reader exited")
 }
 
 func (s *Waller) processMessages(chanMessages <-chan events.Message) {
@@ -302,8 +407,8 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	}
 
 	//IPSET GROUP UPDATE
-	ipsetName := trunc(cid, 18)
-	ipsetName = ipsetName + "-dst"
+	containerID := trunc(cid, 18)
+	ipsetName := containerID + "-dst"
 	s.updateIpsetIps(ipsetName, container)
 
 	for _, srcIP := range srcIPs {
@@ -330,11 +435,19 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 		}
 		if !denyRuleFound {
 			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s. Creating.", ipsetName)
+
 			_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j DROP", srcIP, ipsetName)
 			if err != nil {
 				return err
 			}
-			logrus.Infof("DOCKERWALL-DENY rule for %s created succesfully", ipsetName)
+			logrus.Infof("DOCKERWALL-DENY DROP rule for %s created succesfully", ipsetName)
+
+			//-m limit --limit 1/second
+			_, err = ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j NFLOG --nflog-prefix \"%s\" --nflog-group 32", srcIP, ipsetName, containerID)
+			if err != nil {
+				return err
+			}
+			logrus.Infof("DOCKERWALL-DENY LOG rule for %s created succesfully", ipsetName)
 		}
 	}
 

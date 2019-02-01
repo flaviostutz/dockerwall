@@ -19,6 +19,8 @@ import (
 	_ "github.com/prometheus/client_golang/prometheus"
 	_ "github.com/prometheus/client_golang/prometheus/promhttp"
 
+	_ "github.com/florianl/go-nflog"
+	_ "github.com/google/gopacket"
 	_ "github.com/gorilla/mux"
 )
 

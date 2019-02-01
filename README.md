@@ -14,7 +14,8 @@ Tested with standalone containers, docker-compose and Swarm Clusters.
 # Usage
 
 docker.compose.yml
-```
+
+```yml
 version: '3.5'
 
 services:
@@ -50,7 +51,8 @@ services:
 # Prometheus metrics
 
    * Metrics exposed at http://localhost:50000/metrics
-   * Number of packets and bytes dropped/accepted per container etc
+   * Number of packets and bytes dropped/accepted per container
+   * Destination host:port of dropped packets per container
 
 # Swarm Clusters
 

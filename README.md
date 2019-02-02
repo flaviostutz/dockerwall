@@ -46,7 +46,10 @@ services:
 # ENV configurations
 
   * GATEWAY_NETWORKS - Docker networks from which traffic will be filtered by DockerWall. If empty, all "bridge" networks will be discovered and used for filtering. If you use ! in front of a network name, it won't be managed by DockerWall and all traffic will be allowed through this bridge.
+
   * DEFAULT_OUTBOUND - comma separated list of outbound hosts authorized for all containers by default, so that even if the container doesn't have the "dockerwall.output" label, it will be allowed to access those hosts.
+
+  * DRY_RUN - if true, no DROP directives will be activated but you can see which containers would have packets denied before activating Dockerwall "for real". Look at metric "dockerwall_dropped_packets" to see containers and destination hosts that were elected for drop.
 
 # Prometheus metrics
 

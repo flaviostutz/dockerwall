@@ -10,11 +10,11 @@ import (
 	_ "path/filepath"
 	_ "syscall"
 
-	_ "github.com/Sirupsen/logrus"
 	_ "github.com/docker/docker/api/types"
 	_ "github.com/docker/docker/api/types/events"
 	_ "github.com/docker/docker/client"
 	_ "github.com/go-cmd/cmd"
+	_ "github.com/sirupsen/logrus"
 
 	_ "github.com/prometheus/client_golang/prometheus"
 	_ "github.com/prometheus/client_golang/prometheus/promhttp"

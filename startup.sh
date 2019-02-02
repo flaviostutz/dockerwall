@@ -6,5 +6,7 @@ echo "Starting DockerWall..."
 dockerwall \
     --loglevel=$LOG_LEVEL \
     --gateway-networks=$GATEWAY_NETWORKS \
-    --default-outbound=$DEFAULT_OUTBOUND
+    --default-outbound=$DEFAULT_OUTBOUND \
+    --dry-run=$DRY_RUN
+    
 

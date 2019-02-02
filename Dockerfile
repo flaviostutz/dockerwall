@@ -31,6 +31,7 @@ ADD startup.sh /
 
 ENV GATEWAY_NETWORKS ""
 ENV DEFAULT_OUTBOUND "_dns_"
+ENV DRY_RUN false
 
 VOLUME [ "/var/run/docker.sock" ]
 EXPOSE 50000

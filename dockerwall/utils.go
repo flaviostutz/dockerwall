@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/go-cmd/cmd"
+	"github.com/sirupsen/logrus"
 )
 
 //ShellContext container to transport a Cmd reference

@@ -11,7 +11,6 @@ import (
 
 	"regexp"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
@@ -20,6 +19,8 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/common/log"
+	"github.com/sirupsen/logrus"
 )
 
 //Waller Label based network filter constraints
@@ -28,6 +29,7 @@ type Waller struct {
 	useDefaultNetworks bool
 	gatewayNetworks    []string
 	defaultOutbound    string
+	dryRun             bool
 	skipNetworks       []string
 	currentMetrics     string
 	metricsDropHosts   map[string]map[string]int
@@ -411,6 +413,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 	ipsetName := containerID + "-dst"
 	s.updateIpsetIps(ipsetName, container)
 
+	//IPTABLES CHAINS
 	for _, srcIP := range srcIPs {
 		logrus.Debugf("Checking iptables rules for container src ip %s", srcIP)
 
@@ -436,7 +439,12 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 		if !denyRuleFound {
 			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s. Creating.", ipsetName)
 
-			_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j DROP", srcIP, ipsetName)
+			jump := "DROP"
+			if s.dryRun {
+				jump = "ACCEPT"
+			}
+
+			_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j %s", srcIP, ipsetName, jump)
 			if err != nil {
 				return err
 			}
@@ -664,6 +672,33 @@ func (s *Waller) containerList() (map[string]types.Container, error) {
 func (s *Waller) updateIptablesChains() error {
 	logrus.Debugf("updateIptablesChains()")
 
+	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "-j", "ACCEPT")
+	if err != nil {
+		return err
+	}
+	log.Infof("PREVIOUS DRY RUN? %s", previousWasDryRun)
+	if previousWasDryRun {
+		logrus.Warnf("Previous Dockerwall instance had dry-run activated. Flushing existing iptables chains and rebuilding all")
+	}
+	if s.dryRun {
+		logrus.Warnf("dry-run detected. Flushing existing iptables chains and rebuilding all")
+	}
+
+	if previousWasDryRun || s.dryRun {
+		_, err := ExecShell("iptables -F DOCKERWALL-DENY")
+		if err != nil {
+			return err
+		}
+		_, err = ExecShell("iptables -F DOCKERWALL-ALLOW")
+		if err != nil {
+			return err
+		}
+		_, err = ExecShell("iptables -F DOCKER-USER")
+		if err != nil {
+			return err
+		}
+	}
+
 	//check existing rules
 	rules, err1 := ExecShell("iptables -L DOCKER-USER")
 	if err1 != nil {
@@ -678,7 +713,7 @@ func (s *Waller) updateIptablesChains() error {
 
 	logrus.Debug("Updating/creating ipset group for gateway subnets")
 	ipsetName := "managed-subnets"
-	_, err := ExecShellf("ipset list | grep %s", ipsetName)
+	_, err = ExecShellf("ipset list | grep %s", ipsetName)
 	if err != nil {
 		logrus.Debugf("IPSET group %s seems not to exist. Creating. err=%s", ipsetName, err)
 		_, err := ExecShellf("ipset -N %s nethash", ipsetName)
@@ -735,6 +770,7 @@ func (s *Waller) updateIptablesChains() error {
 	if err != nil {
 		return err
 	}
+
 	logrus.Debug("Adding DOCKERWALL-DENY jump to chain DOCKER-USER")
 	_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
 	if err != nil {

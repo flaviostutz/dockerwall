@@ -6,14 +6,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/client"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
 	logLevel := flag.String("loglevel", "debug", "debug, info, warning, error")
 	gatewayNetworks := flag.String("gateway-networks", "", "Docker networks whose gateway access will be managed by DockerWall. If empty, all bridge networks will be used")
 	defaultOutbound := flag.String("default-outbound", "_dns_", "Domains and IPs that will be allowed by default. Use '_dns_' to allow access to local dns server ip")
+	dryRun := flag.Bool("dry-run", false, "Don't block anything for real, but keep metrics showing which containers would have dropped packets")
 	flag.Parse()
 
 	switch *logLevel {
@@ -58,6 +59,7 @@ func main() {
 		useDefaultNetworks: (len(gatewayNets) == 0),
 		gatewayNetworks:    gatewayNets,
 		defaultOutbound:    *defaultOutbound,
+		dryRun:             *dryRun,
 		skipNetworks:       skipNets,
 		currentMetrics:     "",
 		m:                  &sync.Mutex{},

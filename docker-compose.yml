@@ -10,14 +10,15 @@ services:
     network_mode: host
     environment:
       - LOG_LEVEL=debug
-      - GATEWAY_NETWORKS=!bridge0
+      # - GATEWAY_NETWORKS=!bridge0
+      # - DRY_RUN=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
   test1:
     image: busybox:1.29
-    # command: sh -c "ping www.uol.com.br"
-    command: sh -c "wget www.uol.com.br"
+    command: sh -c "ping www.uol.com.br"
+    # command: sh -c "wget www.uol.com.br"
     labels:
       - "dockerwall.outbound=www.yahoo.com,www.google.com"
 

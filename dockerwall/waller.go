@@ -672,30 +672,31 @@ func (s *Waller) containerList() (map[string]types.Container, error) {
 func (s *Waller) updateIptablesChains() error {
 	logrus.Debugf("updateIptablesChains()")
 
-	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "-j", "ACCEPT")
+	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "ACCEPT")
 	if err != nil {
-		return err
+		previousWasDryRun = true
 	}
 	log.Infof("PREVIOUS DRY RUN? %s", previousWasDryRun)
 	if previousWasDryRun {
-		logrus.Warnf("Previous Dockerwall instance had dry-run activated. Flushing existing iptables chains and rebuilding all")
+		logrus.Debugf("Previous was dry-run")
 	}
 	if s.dryRun {
-		logrus.Warnf("dry-run detected. Flushing existing iptables chains and rebuilding all")
+		logrus.Infof("dry-run detected")
 	}
 
 	if previousWasDryRun || s.dryRun {
+		logrus.Warnf(">>>>>>>>>>>>>>Flushing existing iptables chains and rebuilding all rules")
 		_, err := ExecShell("iptables -F DOCKERWALL-DENY")
 		if err != nil {
-			return err
+			logrus.Warnf("Error flushing DOCKERWALL-DENY. err=%s", err)
 		}
 		_, err = ExecShell("iptables -F DOCKERWALL-ALLOW")
 		if err != nil {
-			return err
+			logrus.Warnf("Error flushing DOCKERWALL-ALLOW. err=%s", err)
 		}
 		_, err = ExecShell("iptables -F DOCKER-USER")
 		if err != nil {
-			return err
+			logrus.Warnf("Error flushing DOCKER-USER. err=%s", err)
 		}
 	}
 
@@ -771,16 +772,30 @@ func (s *Waller) updateIptablesChains() error {
 		return err
 	}
 
-	logrus.Debug("Adding DOCKERWALL-DENY jump to chain DOCKER-USER")
-	_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
-	if err != nil {
-		return err
-	}
+	if s.dryRun {
+		logrus.Debug("Adding DOCKERWALL-ALLOW jump to chain DOCKER-USER")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
+		if err != nil {
+			return err
+		}
+		logrus.Debug("Adding DOCKERWALL-DENY jump to chain DOCKER-USER")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
+		if err != nil {
+			return err
+		}
 
-	logrus.Debug("Adding DOCKERWALL-ALLOW jump to chain DOCKER-USER")
-	_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
-	if err != nil {
-		return err
+	} else {
+		logrus.Debug("Adding DOCKERWALL-DENY jump to chain DOCKER-USER")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-DENY")
+		if err != nil {
+			return err
+		}
+
+		logrus.Debug("Adding DOCKERWALL-ALLOW jump to chain DOCKER-USER")
+		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
+		if err != nil {
+			return err
+		}
 	}
 
 	rules, err1 = ExecShell("iptables -L DOCKERWALL-ALLOW")

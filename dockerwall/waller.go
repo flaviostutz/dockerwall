@@ -1,4 +1,4 @@
-package main
+package dockerwall
 
 import (
 	"context"
@@ -19,30 +19,26 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/gorilla/mux"
-	"github.com/prometheus/common/log"
 	"github.com/sirupsen/logrus"
 )
 
 //Waller Label based network filter constraints
 type Waller struct {
-	dockerClient       *client.Client
-	useDefaultNetworks bool
-	gatewayNetworks    []string
-	defaultOutbound    string
-	dryRun             bool
-	skipNetworks       []string
-	currentMetrics     string
-	metricsDropHosts   map[string]map[string]int
-	m                  *sync.Mutex
+	DockerClient       *client.Client
+	UseDefaultNetworks bool
+	GatewayNetworks    []string
+	DefaultOutbound    string
+	DryRun             bool
+	SkipNetworks       []string
+	CurrentMetrics     string
+	MetricsDropHosts   map[string]map[string]int
+	M                  *sync.Mutex
 }
 
-func (s *Waller) init() {
-}
-
-func (s *Waller) startup() error {
+func (s *Waller) Startup() error {
 	logrus.Infof("Performing startup operations")
 
-	s.metricsDropHosts = make(map[string]map[string]int)
+	s.MetricsDropHosts = make(map[string]map[string]int)
 
 	err := s.updateGatewayNetworks()
 	if err != nil {
@@ -68,13 +64,13 @@ func (s *Waller) startup() error {
 func (s *Waller) sanitizer() {
 	logrus.Debugf("Starting sanitizer")
 	for {
-		s.m.Lock()
+		s.M.Lock()
 
 		logrus.Debugf("Refreshing basic network and iptables rules")
 		s.updateGatewayNetworks()
 
 		containers, err := s.refreshAllContainerRules()
-		if err!=nil {
+		if err != nil {
 			logrus.Errorf("Error refreshing container rules. err=%s", err)
 		} else {
 			logrus.Debug("Looking for orphaned ipset or iptables rules")
@@ -84,7 +80,7 @@ func (s *Waller) sanitizer() {
 			}
 			logrus.Infof("Iptables orphan rules sanitizer run")
 		}
-		s.m.Unlock()
+		s.M.Unlock()
 		time.Sleep(300000 * time.Millisecond)
 	}
 }
@@ -98,7 +94,7 @@ func (s *Waller) dockerEvents() {
 				filters.KeyValuePair{Key: "type", Value: "network"},
 			),
 		}
-		chanMessages, chanError := s.dockerClient.Events(context.Background(), opts)
+		chanMessages, chanError := s.DockerClient.Events(context.Background(), opts)
 		go s.processMessages(chanMessages)
 		err := <-chanError
 		logrus.Warnf("Found error on Docker events listen. restarting. err=%s", err)
@@ -107,7 +103,7 @@ func (s *Waller) dockerEvents() {
 
 // MetricsHandler return current metrics
 func (s *Waller) MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(s.currentMetrics))
+	w.Write([]byte(s.CurrentMetrics))
 }
 
 func (s *Waller) metrics() {
@@ -118,7 +114,7 @@ func (s *Waller) metrics() {
 		}
 		first = false
 
-		s.m.Lock()
+		s.M.Lock()
 
 		metricsAllow, err := s.chainMetrics("DOCKERWALL-ALLOW")
 		if err != nil {
@@ -134,7 +130,7 @@ func (s *Waller) metrics() {
 		//dropped hosts metrics
 		metricsDrop := ""
 		containers, err := s.containerList()
-		for containerid, hostsCounter := range s.metricsDropHosts {
+		for containerid, hostsCounter := range s.MetricsDropHosts {
 			containerName := containerid
 			if len(containers[containerid].Names) > 0 {
 				containerName = strings.Replace(containers[containerid].Names[0], "/", "", 1)
@@ -150,8 +146,8 @@ func (s *Waller) metrics() {
 			}
 		}
 
-		s.currentMetrics = metricsAllow + metricsDeny + metricsDrop
-		s.m.Unlock()
+		s.CurrentMetrics = metricsAllow + metricsDeny + metricsDrop
+		s.M.Unlock()
 	}
 }
 
@@ -262,10 +258,10 @@ func (s *Waller) nflog() {
 
 			destinationIP := fmt.Sprintf("%d.%d.%d.%d:%s:%s", ipv4.DstIP[0], ipv4.DstIP[1], ipv4.DstIP[2], ipv4.DstIP[3], port, protocol)
 
-			dropHosts, exists := s.metricsDropHosts[containerID]
+			dropHosts, exists := s.MetricsDropHosts[containerID]
 			if !exists {
-				s.metricsDropHosts[containerID] = make(map[string]int)
-				dropHosts = s.metricsDropHosts[containerID]
+				s.MetricsDropHosts[containerID] = make(map[string]int)
+				dropHosts = s.MetricsDropHosts[containerID]
 			}
 
 			_, exists = dropHosts[destinationIP]
@@ -292,7 +288,7 @@ func (s *Waller) nflog() {
 
 func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 	for message := range chanMessages {
-		s.m.Lock()
+		s.M.Lock()
 		logrus.Debugf("Received Docker event message %v", message)
 		if message.Type == "container" {
 			//IPSET GROUP UPDATE
@@ -305,7 +301,7 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 						filters.KeyValuePair{Key: "id", Value: message.Actor.ID},
 					),
 				}
-				containers, err := s.dockerClient.ContainerList(context.Background(), opts)
+				containers, err := s.DockerClient.ContainerList(context.Background(), opts)
 				if err != nil {
 					logrus.Debugf("Error listing containers. err=%s", err)
 					continue
@@ -342,32 +338,32 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 				logrus.Info("Gateway network rules updated")
 			}
 		}
-		s.m.Unlock()
+		s.M.Unlock()
 	}
 }
 
 func (s *Waller) updateGatewayNetworks() error {
 	logrus.Debugf("updateGatewayNetworks()")
 	//if no network was defined, use all bridge networks by default
-	if s.useDefaultNetworks {
+	if s.UseDefaultNetworks {
 		logrus.Debugf("No docker networks were defined. Will use all 'bridge' networks on host")
 		opts := types.NetworkListOptions{
 			Filters: filters.NewArgs(filters.KeyValuePair{Key: "driver", Value: "bridge"}),
 		}
-		bnetworks, err := s.dockerClient.NetworkList(context.Background(), opts)
+		bnetworks, err := s.DockerClient.NetworkList(context.Background(), opts)
 		if err != nil {
 			return err
 		}
-		s.gatewayNetworks = make([]string, 0)
+		s.GatewayNetworks = make([]string, 0)
 		for _, bn := range bnetworks {
-			if !contains(s.skipNetworks, bn.Name) {
-				s.gatewayNetworks = append(s.gatewayNetworks, bn.Name)
+			if !contains(s.SkipNetworks, bn.Name) {
+				s.GatewayNetworks = append(s.GatewayNetworks, bn.Name)
 			} else {
 				logrus.Debugf("Network '%s' won't be managed", bn.Name)
 			}
 		}
 	}
-	logrus.Debugf("Bridge networks that will be managed: %v", s.gatewayNetworks)
+	logrus.Debugf("Bridge networks that will be managed: %v", s.GatewayNetworks)
 
 	err := s.updateIptablesChains()
 	if err != nil {
@@ -407,7 +403,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 		logrus.Debugf("Checking iptables rules for container src ip %s", srcIP)
 
 		//IPTABLES ALLOW
-		allowRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", ipsetName, srcIP)
+		allowRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", ipsetName, srcIP, "")
 		if err1 != nil {
 			return err1
 		}
@@ -421,23 +417,25 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 		}
 
 		//IPTABLES DENY
-		denyRuleFound, err2 := s.findRule("DOCKERWALL-DENY", ipsetName, srcIP)
+		jump := "DROP"
+		notJump := "ACCEPT"
+		if s.DryRun {
+			jump = "ACCEPT"
+			notJump = "DROP"
+		}
+
+		denyRuleFound, err2 := s.findRule("DOCKERWALL-DENY", ipsetName, srcIP, jump)
 		if err2 != nil {
 			return err2
 		}
 		if !denyRuleFound {
-			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s. Creating.", ipsetName)
-
-			jump := "DROP"
-			if s.dryRun {
-				jump = "ACCEPT"
-			}
+			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-DENY for %s %s. Creating.", ipsetName, jump)
 
 			_, err := ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j %s", srcIP, ipsetName, jump)
 			if err != nil {
 				return err
 			}
-			logrus.Infof("DOCKERWALL-DENY DROP rule for %s created succesfully", ipsetName)
+			logrus.Infof("DOCKERWALL-DENY %s rule for %s created succesfully", jump, ipsetName)
 
 			//-m limit --limit 1/second
 			_, err = ExecShellf("iptables -I DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j NFLOG --nflog-prefix \"%s\" --nflog-group 32", srcIP, ipsetName, containerID)
@@ -446,6 +444,21 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			}
 			logrus.Infof("DOCKERWALL-DENY LOG rule for %s created succesfully", ipsetName)
 		}
+
+		//remove inconsistent rule (probably due to previous dry run)
+		wrongDenyRuleFound, err3 := s.findRule("DOCKERWALL-DENY", ipsetName, srcIP, notJump)
+		if err3 != nil {
+			return err3
+		}
+		if wrongDenyRuleFound {
+			logrus.Debugf("Clearing rule from DOCKERWALL-DENY chain. srcIP=%s. ipsetName=%s. jump=%s", srcIP, ipsetName, notJump)
+			_, err := ExecShellf("iptables -D DOCKERWALL-DENY -s %s -m set ! --match-set %s dst -j %s", srcIP, ipsetName, notJump)
+			if err != nil {
+				return err
+			}
+			logrus.Infof("DOCKERWALL-DENY %s rule for %s removed succesfully", notJump, ipsetName)
+		}
+
 	}
 
 	return nil
@@ -453,7 +466,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 
 func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) error {
 	//OUTBOUND DOMAIN IPs
-	domainNames := s.defaultOutbound
+	domainNames := s.DefaultOutbound
 	if !strings.Contains(domainNames, "!_dns_") && !strings.Contains(domainNames, "_dns_") {
 		domainNames = domainNames + ",_dns_"
 	}
@@ -606,7 +619,7 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]
 	return ocids, nil
 }
 
-func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (bool, error) {
+func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string, ruleSubstr3 string) (bool, error) {
 	rules, err1 := ExecShellf("iptables -L %s", chain)
 	if err1 != nil {
 		return false, err1
@@ -617,7 +630,7 @@ func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (
 	}
 
 	for _, v := range rul {
-		if strings.Contains(v, ruleSubstr) && strings.Contains(v, ruleSubstr2) {
+		if strings.Contains(v, ruleSubstr) && strings.Contains(v, ruleSubstr2) && strings.Contains(v, ruleSubstr3) {
 			return true, nil
 		}
 	}
@@ -628,9 +641,9 @@ func (s *Waller) findRule(chain string, ruleSubstr string, ruleSubstr2 string) (
 func (s *Waller) containerGwIPs() (map[string][]string, map[string]string, error) {
 	containersGwIP := map[string][]string{}
 	containerNames := map[string]string{}
-	for _, gwNetwork := range s.gatewayNetworks {
+	for _, gwNetwork := range s.GatewayNetworks {
 		// logrus.Debugf("Discovering container ips for network %s", gwNetwork)
-		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
+		netins, err := s.DockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
 			logrus.Errorf("Error while listing container instances attached to network %s. err=%s", gwNetwork, err)
 			return containersGwIP, containerNames, err
@@ -649,7 +662,7 @@ func (s *Waller) containerGwIPs() (map[string][]string, map[string]string, error
 
 func (s *Waller) containerList() (map[string]types.Container, error) {
 	containers := make(map[string]types.Container)
-	contlist, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+	contlist, err := s.DockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
 	if err != nil {
 		logrus.Errorf("Error while listing container instances. err=%s", err)
 		return containers, err
@@ -663,31 +676,24 @@ func (s *Waller) containerList() (map[string]types.Container, error) {
 
 func (s *Waller) updateIptablesChains() error {
 	logrus.Debugf("updateIptablesChains()")
-	if s.dryRun {
+	if s.DryRun {
 		logrus.Infof("dry-run detected")
 	}
 
-	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "ACCEPT")
+	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "ACCEPT", "")
 	if err != nil {
 		previousWasDryRun = true
 	}
 
 	if previousWasDryRun {
-		logrus.Debugf("Previous was dry-run")
-		if !s.dryRun {
-ddd		}
-	} else {
-		if s.dryRun {
+		if !s.DryRun {
+			logrus.Debugf("Previous was dry-run and now it's not dry-run. Refresh container rules")
+			s.refreshAllContainerRules()
 		}
-	}
-
-	if previousWasDryRun || s.dryRun {
-		logrus.Warnf("Flushing existing iptables chains and rebuilding all rules")
-		//TODO REMOVE ALL DOCKERWALL-DENY WITH ACCEPT
-		aaaa
-		_, err := ExecShell("iptables -F DOCKERWALL-DENY")
-		if err != nil {
-			logrus.Warnf("Error flushing DOCKERWALL-DENY. err=%s", err)
+	} else {
+		if s.DryRun {
+			logrus.Debugf("Previous was not dry-run and now it's dry-run. Refresh container rules")
+			s.refreshAllContainerRules()
 		}
 	}
 
@@ -723,8 +729,8 @@ ddd		}
 		}
 	}
 
-	for _, gwNetwork := range s.gatewayNetworks {
-		netins, err := s.dockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
+	for _, gwNetwork := range s.GatewayNetworks {
+		netins, err := s.DockerClient.NetworkInspect(context.Background(), gwNetwork, types.NetworkInspectOptions{})
 		if err != nil {
 			logrus.Errorf("Error while listing container instances. network=%s. err=%s", gwNetwork, err)
 			return fmt.Errorf("Could not inspect docker network %s", gwNetwork)
@@ -739,7 +745,7 @@ ddd		}
 			return fmt.Errorf("Could not find subnet configuration for docker network %s", gwNetwork)
 		}
 	}
-	
+
 	logrus.Debug("Commiting ipset group used for gw network subnets")
 	_, err = ExecShellf("ipset swap %s %s", ipsetNameTemp, ipsetName)
 	if err != nil {
@@ -763,7 +769,7 @@ ddd		}
 		return err
 	}
 
-	if s.dryRun {
+	if s.DryRun {
 		logrus.Debug("Adding DOCKERWALL-ALLOW jump to chain DOCKER-USER")
 		_, err = ExecShell("iptables -I DOCKER-USER -m set --match-set managed-subnets src -j DOCKERWALL-ALLOW")
 		if err != nil {
@@ -811,12 +817,12 @@ ddd		}
 	return nil
 }
 
-func(s * Waller) refreshAllContainerRules() ([]Container, error) {
+func (s *Waller) refreshAllContainerRules() ([]types.Container, error) {
 	logrus.Debugf("Refreshing container specific rules")
-	containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+	containers, err := s.DockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
 	if err != nil {
 		logrus.Errorf("Error listing containers. err=%s", err)
-		return []Container{}, err
+		return []types.Container{}, err
 	}
 
 	logrus.Debug("Updating filters and domain ips")

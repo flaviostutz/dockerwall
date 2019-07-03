@@ -680,7 +680,7 @@ func (s *Waller) updateIptablesChains() error {
 		logrus.Infof("dry-run detected")
 	}
 
-	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "ACCEPT", "")
+	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "", "")
 	if err != nil {
 		previousWasDryRun = true
 	}

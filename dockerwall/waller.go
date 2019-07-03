@@ -73,28 +73,17 @@ func (s *Waller) sanitizer() {
 		logrus.Debugf("Refreshing basic network and iptables rules")
 		s.updateGatewayNetworks()
 
-		logrus.Debugf("Refreshing container specific rules")
-		containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
-		if err != nil {
-			logrus.Errorf("Error listing containers. err=%s", err)
-
+		containers, err := s.refreshAllContainerRules()
+		if err!=nil {
+			logrus.Errorf("Error refreshing container rules. err=%s", err)
 		} else {
-			logrus.Debug("Updating filters and domain ips")
-			for _, cont := range containers {
-				cid := trunc(cont.ID, 18)
-				err = s.updateContainerFilters(cont)
-				if err != nil {
-					logrus.Warnf("Error updating container filter. container=%s, err=%s", cid, err)
-				}
-			}
-
 			logrus.Debug("Looking for orphaned ipset or iptables rules")
 			err = s.removeOrphans(containers)
 			if err != nil {
 				logrus.Errorf("Error removing orphans. err=%s", err)
 			}
+			logrus.Infof("Iptables orphan rules sanitizer run")
 		}
-		logrus.Infof("Iptables orphan rules sanitizer run")
 		s.m.Unlock()
 		time.Sleep(300000 * time.Millisecond)
 	}
@@ -465,6 +454,9 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) error {
 	//OUTBOUND DOMAIN IPs
 	domainNames := s.defaultOutbound
+	if !strings.Contains(domainNames, "!_dns_") && !strings.Contains(domainNames, "_dns_") {
+		domainNames = domainNames + ",_dns_"
+	}
 	for k, v := range container.Labels {
 		if k == "dockerwall.outbound" {
 			domainNames = domainNames + "," + v
@@ -671,32 +663,31 @@ func (s *Waller) containerList() (map[string]types.Container, error) {
 
 func (s *Waller) updateIptablesChains() error {
 	logrus.Debugf("updateIptablesChains()")
+	if s.dryRun {
+		logrus.Infof("dry-run detected")
+	}
 
 	previousWasDryRun, err := s.findRule("DOCKERWALL-DENY", "ACCEPT", "ACCEPT")
 	if err != nil {
 		previousWasDryRun = true
 	}
-	log.Infof("PREVIOUS DRY RUN? %s", previousWasDryRun)
+
 	if previousWasDryRun {
 		logrus.Debugf("Previous was dry-run")
-	}
-	if s.dryRun {
-		logrus.Infof("dry-run detected")
+		if !s.dryRun {
+ddd		}
+	} else {
+		if s.dryRun {
+		}
 	}
 
 	if previousWasDryRun || s.dryRun {
-		logrus.Warnf(">>>>>>>>>>>>>>Flushing existing iptables chains and rebuilding all rules")
+		logrus.Warnf("Flushing existing iptables chains and rebuilding all rules")
+		//TODO REMOVE ALL DOCKERWALL-DENY WITH ACCEPT
+		aaaa
 		_, err := ExecShell("iptables -F DOCKERWALL-DENY")
 		if err != nil {
 			logrus.Warnf("Error flushing DOCKERWALL-DENY. err=%s", err)
-		}
-		_, err = ExecShell("iptables -F DOCKERWALL-ALLOW")
-		if err != nil {
-			logrus.Warnf("Error flushing DOCKERWALL-ALLOW. err=%s", err)
-		}
-		_, err = ExecShell("iptables -F DOCKER-USER")
-		if err != nil {
-			logrus.Warnf("Error flushing DOCKER-USER. err=%s", err)
 		}
 	}
 
@@ -709,8 +700,7 @@ func (s *Waller) updateIptablesChains() error {
 	if err2 != nil {
 		return err2
 	}
-
-	previousRulesCount := len(rul) - 2
+	previousUserRulesCount := len(rul) - 2
 
 	logrus.Debug("Updating/creating ipset group for gateway subnets")
 	ipsetName := "managed-subnets"
@@ -749,6 +739,7 @@ func (s *Waller) updateIptablesChains() error {
 			return fmt.Errorf("Could not find subnet configuration for docker network %s", gwNetwork)
 		}
 	}
+	
 	logrus.Debug("Commiting ipset group used for gw network subnets")
 	_, err = ExecShellf("ipset swap %s %s", ipsetNameTemp, ipsetName)
 	if err != nil {
@@ -810,7 +801,7 @@ func (s *Waller) updateIptablesChains() error {
 	}
 
 	logrus.Debugf("Removing previous rules from DOCKER-USER chain")
-	for i := previousRulesCount; i > 0; i-- {
+	for i := previousUserRulesCount; i > 0; i-- {
 		_, err = ExecShellf("iptables -D DOCKER-USER %d", i+3)
 		if err != nil {
 			return err
@@ -818,4 +809,23 @@ func (s *Waller) updateIptablesChains() error {
 	}
 
 	return nil
+}
+
+func(s * Waller) refreshAllContainerRules() ([]Container, error) {
+	logrus.Debugf("Refreshing container specific rules")
+	containers, err := s.dockerClient.ContainerList(context.Background(), types.ContainerListOptions{})
+	if err != nil {
+		logrus.Errorf("Error listing containers. err=%s", err)
+		return []Container{}, err
+	}
+
+	logrus.Debug("Updating filters and domain ips")
+	for _, cont := range containers {
+		cid := trunc(cont.ID, 18)
+		err = s.updateContainerFilters(cont)
+		if err != nil {
+			logrus.Warnf("Error updating container filter. container=%s, err=%s", cid, err)
+		}
+	}
+	return containers, nil
 }

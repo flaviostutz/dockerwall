@@ -24,15 +24,16 @@ import (
 
 //Waller Label based network filter constraints
 type Waller struct {
-	DockerClient       *client.Client
-	UseDefaultNetworks bool
-	GatewayNetworks    []string
-	DefaultOutbound    string
-	DryRun             bool
-	SkipNetworks       []string
-	CurrentMetrics     string
-	MetricsDropHosts   map[string]map[string]int
-	M                  *sync.Mutex
+	DockerClient           *client.Client
+	UseDefaultNetworks     bool
+	GatewayNetworks        []string
+	DefaultOutbound        string
+	DryRun                 bool
+	SkipNetworks           []string
+	CurrentMetrics         string
+	MetricsDropHosts       map[string]map[string]int
+	M                      *sync.Mutex
+	gatewayUpdateScheduled bool
 }
 
 func (s *Waller) Startup() error {
@@ -49,6 +50,7 @@ func (s *Waller) Startup() error {
 	go s.dockerEvents()
 	go s.metrics()
 	go s.nflog()
+	go s.triggerGatewayUpdateIfScheduled()
 
 	router := mux.NewRouter()
 	router.HandleFunc("/metrics", s.MetricsHandler).Methods("GET")
@@ -82,6 +84,22 @@ func (s *Waller) sanitizer() {
 		}
 		s.M.Unlock()
 		time.Sleep(300000 * time.Millisecond)
+	}
+}
+
+func (s *Waller) triggerGatewayUpdateIfScheduled() {
+	for {
+		if s.gatewayUpdateScheduled {
+			s.M.Lock()
+			err0 := s.updateGatewayNetworks()
+			if err0 != nil {
+				logrus.Warnf("Error on updateGatewayNetworks(). err=%s", err0)
+			}
+			logrus.Info("Gateway network rules updated")
+			s.gatewayUpdateScheduled = false
+			s.M.Unlock()
+		}
+		time.Sleep(3000 * time.Millisecond)
 	}
 }
 
@@ -304,6 +322,7 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 				containers, err := s.DockerClient.ContainerList(context.Background(), opts)
 				if err != nil {
 					logrus.Debugf("Error listing containers. err=%s", err)
+					s.M.Unlock()
 					continue
 				}
 				if len(containers) == 1 {
@@ -334,8 +353,9 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 
 		} else if message.Type == "network" {
 			if message.Action == "create" || message.Action == "destroy" {
-				s.updateGatewayNetworks()
-				logrus.Info("Gateway network rules updated")
+				//did by "scheduling" because there are moments where network create/destroy is very frequent
+				//(faster than the time we can handle gateway updates), so schedule it to perform once at 3s if needed
+				s.gatewayUpdateScheduled = true
 			}
 		}
 		s.M.Unlock()

@@ -182,6 +182,7 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 
 	containers, err := s.containerList()
 
+	alreadyAdded := make(map[string]bool)
 	metrics := ""
 	spaceregex := regexp.MustCompile(`\s+`)
 	for _, line := range lines {
@@ -198,6 +199,14 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 				continue
 			}
 			containerid := mcid[1]
+
+			_, found := alreadyAdded[containerid]
+			if found {
+				logrus.Warnf("containerid %s found duplicate in iptables chain %s. Avoiding duplicate entry in metrics.", containerid, chainName)
+				continue
+			}
+			alreadyAdded[containerid] = true
+
 			containerName := containerid
 			if len(containers[containerid].Names) > 0 {
 				containerName = strings.Replace(containers[containerid].Names[0], "/", "", 1)

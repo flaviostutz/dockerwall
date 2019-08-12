@@ -51,9 +51,8 @@ func ExecShellTimeout(command string, timeout time.Duration, ctx *ShellContext) 
 	logrus.Debugf("shell output (%d): %s", status.Exit, out)
 	if status.Exit != 0 {
 		return out, fmt.Errorf("Failed to run command: '%s'; exit=%d; out=%s", command, status.Exit, out)
-	} else {
-		return out, nil
 	}
+	return out, nil
 }
 
 //ExecShell execute a shell command (like bash -c 'your command')

@@ -169,7 +169,7 @@ func (s *Waller) metrics() {
 
 		//DNS queries metrics
 		metricsDNSQueries := ""
-		containers, err := s.containerList()
+		containers, err = s.containerList()
 		for containerid, dnsCounter := range s.MetricsDNSQueries {
 			containerName := containerid
 			if len(containers[containerid].Names) > 0 {
@@ -212,15 +212,16 @@ func (s *Waller) chainMetrics(chainName string) (string, error) {
 			continue
 		}
 
-		containeridregex := regexp.MustCompile("match-set ([-0-9a-z]+)-dst dst")
+		// containeridregex := regexp.MustCompile("match-set ([-0-9a-z]+)-dst dst")
+		containeridregex := regexp.MustCompile("(DROP|ACCEPT).*match-set ([-0-9a-z]+)-dst dst")
 
 		if containeridregex.MatchString(line) {
 			mcid := containeridregex.FindStringSubmatch(line)
-			if len(mcid) != 2 {
+			if len(mcid) != 3 {
 				logrus.Warnf("Could not find container id in line %s", line)
 				continue
 			}
-			containerid := mcid[1]
+			containerid := mcid[2]
 
 			_, found := alreadyAdded[containerid]
 			if found {
@@ -284,14 +285,17 @@ func (s *Waller) nflog() {
 		nfData := m[nflog.AttrPayload].([]byte)
 
 		var payload gopacket.Payload
-		var eth layers.Ethernet
+		// var eth layers.Ethernet
 		var ip4 layers.IPv4
-		var ip6 layers.IPv6
+		// var ip6 layers.IPv6
+		var icmp4 layers.ICMPv4
 		var tcp layers.TCP
 		var udp layers.UDP
 		var dns layers.DNS
 
-		parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &tcp, &udp, &dns, &payload)
+		parser := gopacket.NewDecodingLayerParser(layers.LayerTypeIPv4, &ip4, &icmp4, &tcp, &udp, &dns, &payload)
+		parser.IgnoreUnsupported = true
+		// parser := gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &eth, &ip4, &ip6, &tcp, &udp, &dns, &payload)
 
 		decodedLayers := make([]gopacket.LayerType, 0, 10)
 		err := parser.DecodeLayers(nfData, &decodedLayers)
@@ -310,8 +314,10 @@ func (s *Waller) nflog() {
 			switch typ {
 			case layers.LayerTypeIPv4:
 				dstIP = ip4.DstIP
-			case layers.LayerTypeIPv6:
-				dstIP = ip6.DstIP
+			// case layers.LayerTypeIPv6:
+			// 	dstIP = ip6.DstIP
+			case layers.LayerTypeICMPv4:
+				protocol = "icmp"
 			case layers.LayerTypeTCP:
 				protocol = "tcp"
 				port = fmt.Sprintf("%d", tcp.DstPort)
@@ -321,13 +327,14 @@ func (s *Waller) nflog() {
 			case layers.LayerTypeDNS:
 				dnsQuery = true
 				for _, q := range dns.Questions {
-					dnsQueriedHosts = append(dnsQueriedHosts, fmt.Sprintf("%s|%s", string(q.Name), q.Type.String())
+					dnsQueriedHosts = append(dnsQueriedHosts, fmt.Sprintf("%s|%s", string(q.Name), q.Type.String()))
 				}
 			}
 		}
 
-		//cound dns queries by domainname/type
+		//found dns queries by domainname/type
 		if dnsQuery {
+			logrus.Debugf("DNS query detected from container %s", nfContainerID)
 			dnsQuery, exists := s.MetricsDNSQueries[nfContainerID]
 			if !exists {
 				s.MetricsDNSQueries[nfContainerID] = make(map[string]int)
@@ -339,9 +346,10 @@ func (s *Waller) nflog() {
 					dnsQuery[queriedHost] = 0
 				}
 				dnsQuery[queriedHost] = dnsQuery[queriedHost] + 1
+				logrus.Debugf("DNS query detected from container %s to %s", nfContainerID, queriedHost)
 			}
 
-		//count dropped packets
+			//count dropped packets
 		} else {
 			destinationIP := fmt.Sprintf("%d.%d.%d.%d:%s:%s", dstIP[0], dstIP[1], dstIP[2], dstIP[3], port, protocol)
 
@@ -495,18 +503,24 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			return err1
 		}
 		if !allowRuleFound {
-			_, err := ExecShellf("iptables -I DOCKERWALL-ALLOW -s %s -p udp -m udp --dport 53 -j NFLOG --nflog-prefix \"%s\" --nflog-group 32", srcIP, containerID)
-			if err != nil {
-				return err
-			}
-			logrus.Infof("DOCKERWALL-ALLOW NFLOG rule for DNS queries %s created succesfully", ipsetName)
-
 			logrus.Debugf("Iptables rule not found in chain DOCKERWALL-ALLOW for %s. Creating.", ipsetName)
 			_, err = ExecShellf("iptables -I DOCKERWALL-ALLOW -s %s -m set --match-set %s dst -j ACCEPT", srcIP, ipsetName)
 			if err != nil {
 				return err
 			}
 			logrus.Infof("DOCKERWALL-ALLOW rule for %s created succesfully", ipsetName)
+		}
+
+		dnsRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", containerID, srcIP, "udp dpt:domain")
+		if err1 != nil {
+			return err1
+		}
+		if !dnsRuleFound {
+			_, err = ExecShellf("iptables -I DOCKERWALL-ALLOW -s %s -p udp -m udp --dport 53 -j NFLOG --nflog-prefix \"%s\" --nflog-group 32", srcIP, containerID)
+			if err != nil {
+				return err
+			}
+			logrus.Infof("DOCKERWALL-ALLOW NFLOG rule for DNS queries %s created succesfully", ipsetName)
 		}
 
 		//IPTABLES DENY
@@ -655,9 +669,8 @@ func (s *Waller) removeOrphans(containers []types.Container) error {
 		_, err5 := ExecShellf("ipset destroy %s", ipsetName)
 		if err5 != nil {
 			return fmt.Errorf("Error removing ipset group %s. err=%s", ipsetName, err5)
-		} else {
-			logrus.Infof("Ipset group %s removed successfully", ipsetName)
 		}
+		logrus.Infof("Ipset group %s removed successfully", ipsetName)
 	}
 
 	return nil
@@ -675,7 +688,7 @@ func (s *Waller) removeOrphanRules(chain string, currentContainers map[string][]
 		return nil, err2
 	}
 
-	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst")
+	cidregex, _ := regexp.Compile("match-set ([0-9a-zA-Z]+)-dst dst|nflog-prefix  ([0-9a-zA-Z]+) nflog-group")
 	lineregex, _ := regexp.Compile("^([0-9]+)")
 
 	//invert rules order so that we can remove rules without changing the line numbers

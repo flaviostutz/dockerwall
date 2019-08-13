@@ -14,6 +14,8 @@ services:
       # - DRY_RUN=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 50000:50000
 
   test1:
     image: busybox:1.29

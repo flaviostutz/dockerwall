@@ -511,6 +511,7 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			logrus.Infof("DOCKERWALL-ALLOW rule for %s created succesfully", ipsetName)
 		}
 
+		//TODO: this rule doesn't apply to container internal DNS queries because they respond on loopback interface
 		dnsRuleFound, err1 := s.findRule("DOCKERWALL-ALLOW", containerID, srcIP, "udp dpt:domain")
 		if err1 != nil {
 			return err1

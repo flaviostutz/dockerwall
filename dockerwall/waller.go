@@ -900,7 +900,7 @@ func (s *Waller) updateIptablesChains() error {
 	}
 
 	//INPUT chain rule for getting all outgoing dns queries from this host
-	dnsAllRuleFound, err2 := s.findRule("INPUT", "_host_", "anywhere", "udp dpt:domain")
+	dnsAllRuleFound, err2 := s.findRule("INPUT", "_host_", "anywhere", "udp spt:domain")
 	if err2 != nil {
 		return err2
 	}

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -175,10 +176,20 @@ func (s *Waller) metrics() {
 					}
 				}
 
+				port := ">1024"
+				pp, err1 := strconv.Atoi(dest[1])
+				if err1 != nil {
+					port = "err"
+				}
+				if pp <= 1024 {
+					port = fmt.Sprintf("%d", pp)
+				}
+				port = fmt.Sprintf("%s", port)
+
 				metricName := "dockerwall_dropped_packets"
 				m := "#HELP " + metricName + " Number of packets denied by Dockerwall\n"
 				m = m + "#TYPE " + metricName + " counter\n"
-				m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",destination=\"%s\",port=\"%s\",protocol=\"%s\",domains=\"%s\"} %d\n\n", metricName, containerid, containerName, imageName, dest[0], dest[1], dest[2], domainsStr, counter)
+				m = m + fmt.Sprintf("%s{id=\"%s\",name=\"%s\",image=\"%s\",destination=\"%s\",port=\"%s\",protocol=\"%s\",domains=\"%s\"} %d\n\n", metricName, containerid, containerName, imageName, dest[0], port, dest[2], domainsStr, counter)
 				metricsDropHosts = metricsDropHosts + m
 			}
 		}
@@ -311,10 +322,10 @@ func (s *Waller) nflog() {
 				protocol = "icmp"
 			case layers.LayerTypeTCP:
 				protocol = "tcp"
-				port = fmt.Sprintf("%d", tcp.SrcPort)
+				port = fmt.Sprintf("%d", tcp.DstPort)
 			case layers.LayerTypeUDP:
 				protocol = "udp"
-				port = fmt.Sprintf("%d", udp.SrcPort)
+				port = fmt.Sprintf("%d", udp.DstPort)
 			case layers.LayerTypeDNS:
 				dnsQuery = true
 			}

@@ -311,10 +311,10 @@ func (s *Waller) nflog() {
 				protocol = "icmp"
 			case layers.LayerTypeTCP:
 				protocol = "tcp"
-				port = fmt.Sprintf("%d", tcp.DstPort)
+				port = fmt.Sprintf("%d", tcp.SrcPort)
 			case layers.LayerTypeUDP:
 				protocol = "udp"
-				port = fmt.Sprintf("%d", udp.DstPort)
+				port = fmt.Sprintf("%d", udp.SrcPort)
 			case layers.LayerTypeDNS:
 				dnsQuery = true
 			}

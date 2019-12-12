@@ -7,9 +7,10 @@ require (
 	github.com/docker/docker v0.7.3-0.20190703083651-b2b2de3699f1
 	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-units v0.4.0 // indirect
+	github.com/flaviostutz/dsutils v0.0.0-20191212011043-1d86c297fa4e
+	github.com/flaviostutz/osutils v0.0.0-20191211140644-fd70b77411af
 	github.com/florianl/go-nflog v1.1.0
-	github.com/go-cmd/cmd v1.0.4
-	github.com/go-test/deep v1.0.1 // indirect
+	github.com/go-cmd/cmd v1.1.0
 	github.com/gogo/protobuf v1.2.1 // indirect
 	github.com/google/gopacket v1.1.17
 	github.com/gorilla/mux v1.7.3

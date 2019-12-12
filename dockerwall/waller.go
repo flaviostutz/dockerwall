@@ -485,7 +485,7 @@ func (s *Waller) addIpsToContainerIpsetDst(containerID string, ips []string) err
 	for _, ip := range ips {
 		ipstr = ipstr + ip + "\n"
 	}
-	_, err := osutils.ExecShellf("echo -e \"%s\" | xargs -L1 ipset -A %s", ipstr, ipsetName)
+	_, err := osutils.ExecShellf("echo -e \"%s\" | xargs -L1 ipset -A -! %s", ipstr, ipsetName)
 	if err == nil {
 		// add container ipset ips and setup it on initial loading
 		addIPToIpsetMap(s.ContainerIPSetIps, containerID, ips)

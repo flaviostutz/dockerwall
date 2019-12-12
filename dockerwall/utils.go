@@ -29,29 +29,29 @@ func ipsetMapFromCurrentIPSET() (map[string]dsutils.TTLCollection, error) {
 		logrus.Errorf("Couldn't list ipset groups. err=%s", err1)
 		return nil, err1
 	}
-	ipsetNameRegex, _ := regexp.Compile("Name: (.*)\n")
-	ipsetNames := ipsetNameRegex.FindAllStringSubmatch(listStr, -1)
-	ipsetMembersRegex, _ := regexp.Compile("(?sU)Members:\n(.*)\n\n")
-	ipsetMembers := ipsetMembersRegex.FindAllStringSubmatch(fmt.Sprintf("%s\n\n", listStr), -1)
+	ipsetRegex, _ := regexp.Compile("(?Us)Name: ([A-Za-z0-9]*)-dst.*Members:(.*)\n\n")
+	ipsetGroups := ipsetRegex.FindAllStringSubmatch(fmt.Sprintf("%s\n\n\n", listStr), -1)
 
-	// logrus.Debugf(">>>>> ipsetNames %v", ipsetNames)
-	// logrus.Debugf(">>>>> ipsetMembers %v", ipsetMembers)
+	// fmt.Printf(">>>>> listStr\n%s", fmt.Sprintf("%s\n\n", listStr))
+	// fmt.Printf(">>>>> ipsetGroups\n%v", ipsetGroups)
 
 	ipsetMap := make(map[string]dsutils.TTLCollection)
-	for i, ipsetName := range ipsetNames {
+	for _, ipsetGroup := range ipsetGroups {
 
-		ipsetIps := strings.Split(ipsetMembers[i][1], "\n")
-		// logrus.Debugf("IPSET %s - %v", ipsetName[1], ipsetIps)
+		containerID := ipsetGroup[1]
+		ipsetIpsStr := ipsetGroup[2]
 
-		containerIDRegex, _ := regexp.Compile("(.*)-dst")
-		containerIDResult := containerIDRegex.FindAllStringSubmatch(ipsetName[1], -1)
-		if len(containerIDResult) == 1 {
-			containerID := containerIDResult[0][1]
+		ipsetIps := strings.Split(ipsetIpsStr, "\n")
+		if len(ipsetIps) > 0 {
+			ipsetIps = ipsetIps[1:]
+		}
+		// logrus.Debugf("IPSET %s - %v", containerID, ipsetIps)
+
+		if len(ipsetIps) > 0 {
 			addIPToIpsetMap(ipsetMap, containerID, ipsetIps)
 		}
-
 	}
-	logrus.Debugf("ipsetMap from actual IPSET=%v", ipsetMap)
+	// logrus.Debugf("ipsetMap from actual IPSET=%v", ipsetMap)
 	for k, v := range ipsetMap {
 		logrus.Debugf("IPSET MAP %s - %v", k, v.List())
 	}

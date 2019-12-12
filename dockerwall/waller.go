@@ -655,19 +655,6 @@ func (s *Waller) updateContainerFilters(container types.Container) error {
 			logrus.Infof("DOCKERWALL-DENY NFLOG rule for dropped packets %s created succesfully", ipsetName)
 		}
 
-		// //INPUT chain rule for getting all incoming dns queries returned to this container
-		// dnsRuleFound, err2 := s.findRule("INPUT", containerID, "anywhere", "udp spt:domain")
-		// if err2 != nil {
-		// 	return err2
-		// }
-		// if !dnsRuleFound {
-		// 	_, err = osutils.ExecShellf("iptables -I INPUT -p udp -m udp -d %s --sport 53 -j NFLOG --nflog-prefix \"%s\" --nflog-group 32", srcIP, containerID)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-		// 	logrus.Infof("INPUT chain NFLOG rule for container %s DNS queries created succesfully", containerID)
-		// }
-
 		//remove inconsistent rule (probably due to previous dry run)
 		wrongDenyRuleFound, err3 := s.findRule("DOCKERWALL-DENY", ipsetName, srcIP, notJump)
 		if err3 != nil {
@@ -729,7 +716,7 @@ func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) err
 
 	if ipstr != "" {
 		logrus.Debugf("Adding ip rules to ipset %s. ips=%s", ipsetName, ipstr)
-		_, err = osutils.ExecShellf("echo -e \"%s\" | xargs -L1 ipset -A %s", ipstr, ipsetName)
+		_, err = osutils.ExecShellf("echo -e \"%s\" | xargs -L1 ipset -A -! %s", ipstr, ipsetName)
 		if err != nil {
 			logrus.Debugf("Couldn't add ips to ipset group. err=%s", err)
 		}
@@ -745,11 +732,10 @@ func (s *Waller) updateIpsetIps(ipsetName string, container types.Container) err
 
 	if domainsstr != "" {
 		logrus.Debugf("Getting domain name IPs and adding to ipset %s. domains=%s", ipsetName, domainsstr)
-		logrus.Infof("NOT USING DIG")
-		// _, err1 := ExecShellf("dig A +short %s | xargs -L1 ipset -A %s", domainsstr, ipsetName)
-		// if err1 != nil {
-		// 	logrus.Debugf("Couldn't add ips to ipset group %s. err=%s", ipsetName, err1)
-		// }
+		_, err1 := osutils.ExecShellf("dig A +short %s | xargs -L1 ipset -A -! %s", domainsstr, ipsetName)
+		if err1 != nil {
+			logrus.Debugf("Couldn't add ips to ipset group %s. err=%s", ipsetName, err1)
+		}
 	}
 
 	return nil

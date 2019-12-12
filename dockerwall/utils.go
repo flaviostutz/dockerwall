@@ -23,7 +23,7 @@ func getContainerOutboundDomainNames(container types.Container) string {
 }
 
 func ipsetMapFromCurrentIPSET() (map[string]dsutils.TTLCollection, error) {
-	logrus.Debugf("Add existing IPSET entries to known map entries")
+	logrus.Debugf("Getting current IPSET groups")
 	listStr, err1 := osutils.ExecShellf("ipset -L")
 	if err1 != nil {
 		logrus.Errorf("Couldn't list ipset groups. err=%s", err1)
@@ -52,16 +52,22 @@ func ipsetMapFromCurrentIPSET() (map[string]dsutils.TTLCollection, error) {
 
 	}
 	logrus.Debugf("ipsetMap from actual IPSET=%v", ipsetMap)
+	for k, v := range ipsetMap {
+		logrus.Debugf("IPSET MAP %s - %v", k, v.List())
+	}
 	return ipsetMap, nil
 }
 
 func addIPToIpsetMap(ipsetMap map[string]dsutils.TTLCollection, containerID string, ips []string) {
 	m, exists := ipsetMap[containerID]
 	if !exists {
-		m = dsutils.NewTTLCollection(float32(-1))
+		logrus.Debugf("ipsetMap doesn't exist for container. creating %s", containerID)
+		m = dsutils.NewTTLCollection(float32(30 * 24 * 3600))
 		ipsetMap[containerID] = m
 	}
 	for _, ip := range ips {
+		logrus.Debugf("adding element to ipsetmap. containerID=%s. ip=%s", containerID, ip)
 		m.Add(ip)
 	}
+	ipsetMap[containerID] = m
 }

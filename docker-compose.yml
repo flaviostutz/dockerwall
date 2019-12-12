@@ -22,7 +22,7 @@ services:
     command: sh -c "ping www.uol.com.br"
     # command: sh -c "wget www.uol.com.br"
     labels:
-      - "dockerwall.outbound=www.yahoo.com,www.google.com,www.uol.com.br"
+      - "dockerwall.outbound=www.yahoo.com,www.google.com,www.uol.com.br,www.cade.com.br"
 
   prometheus:
     image: flaviostutz/prometheus

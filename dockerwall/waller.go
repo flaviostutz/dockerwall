@@ -50,16 +50,16 @@ func (s *Waller) Startup() error {
 	s.DNSKnownReverse = make(map[string]map[string]bool)
 	s.KnownContainers = make(map[string]types.Container)
 
-	err := s.updateGatewayNetworks()
-	if err != nil {
-		return err
-	}
-
 	ipsetMap, err1 := ipsetMapFromCurrentIPSET()
 	if err1 != nil {
 		return err1
 	}
 	s.ContainerIPSetIps = ipsetMap
+
+	err := s.updateGatewayNetworks()
+	if err != nil {
+		return err
+	}
 
 	go s.sanitizer()
 	go s.dockerEvents()
@@ -344,16 +344,19 @@ func (s *Waller) nflog() {
 
 		if dnsQuery {
 
-			logrus.Debugf("NFLOG DNS QUERY RECEIVED")
+			// logrus.Debugf("NFLOG DNS QUERY RECEIVED")
 
 			newIps := make(map[string][]string, 0)
-			cnames := make(map[string]string)
+			// cnames := make(map[string]string)
+			domainNames := make(map[string]bool, 0)
 			for _, ans := range dns.Answers {
 				domainName := string(ans.Name)
+				domainNames[domainName] = true
 				if ans.Type == layers.DNSTypeCNAME {
-					d2 := string(ans.CNAME)
-					cnames[d2] = domainName
-					logrus.Debugf("DNS CNAME %s %s", d2, domainName)
+					cname := string(ans.CNAME)
+					// cnames[domainName] = d2
+					domainNames[cname] = true
+					logrus.Debugf("DNS CNAME %s -> %s", domainName, cname)
 					continue
 				}
 
@@ -372,10 +375,6 @@ func (s *Waller) nflog() {
 					domains, _ = s.DNSKnownReverse[ip]
 				}
 				domains[domainName] = true
-				alternativeCname, exists := cnames[domainName]
-				if !exists {
-					alternativeCname = ""
-				}
 
 				//find all containers that would access this domain and update their authorized IPs
 				for nfContainerID, container := range s.KnownContainers {
@@ -391,55 +390,61 @@ func (s *Waller) nflog() {
 						for _, d := range ad {
 							//check if returned domain in DNS query is explicity set in outbound domains from container labels
 							authDomain := strings.ToLower(d)
-							// fmt.Printf("AUTH DOMAIN k=%s map=%s\n", authDomain, cnames[domainName])
-							if authDomain == domainName {
+							_, exists := domainNames[authDomain]
+							logrus.Debugf("AUTH DOMAIN authDomain=%s domainNames=%v exists=%s\n", authDomain, domainNames, exists)
+							if exists {
 								domainAuthorized = true
-							}
-							if alternativeCname != "" && authDomain == alternativeCname {
-								domainAuthorized = true
+								break
 							}
 						}
+						if domainAuthorized {
+							break
+						}
 					}
+
 					if domainAuthorized {
 						//check if the returned IP was already known for this container and if the domain name is authorized
 						iplist, exists := s.ContainerIPSetIps[cid]
-						if exists {
-							logrus.Debugf("Domain authorized, but ip not found in IPSET for container. domain=%s alternativeCname=%s container=%s ip=%s", domainName, alternativeCname, cid, ip)
-							ipFound := false
-							for _, knownIP := range iplist.List() {
-								if ip == knownIP {
-									ipFound = true
-									break
-								}
+						if !exists {
+							logrus.Debugf("Domain authorized, but IPSET group not found for container. creating.")
+							addIPToIpsetMap(s.ContainerIPSetIps, cid, make([]string, 0))
+							iplist, _ = s.ContainerIPSetIps[cid]
+						}
+
+						ipFound := false
+						l := iplist.List()
+						for _, knownIP := range l {
+							// logrus.Debugf(">>>>>> ip=%s knownIP=%s", ip, knownIP)
+							if ip == knownIP {
+								ipFound = true
+								break
 							}
-							if !ipFound {
-								logrus.Debugf("Domain authorized, but IP is not in IPSET yet. Adding it. domain=%s alternativeCname=%s ip=%s", domainName, alternativeCname, ip)
-								ni, exists := newIps[cid]
-								if !exists {
-									ni = make([]string, 0)
-								}
-								ni = append(ni, ip)
-								newIps[cid] = ni
-							} else {
-								logrus.Debugf("DNS query returned an IP that is already authorized in IPSET for container %s.", cid)
+						}
+						if !ipFound {
+							logrus.Debugf("Domain authorized, but IP is not in IPSET yet. Adding it. domain=%v ip=%s", domainNames, ip)
+							ni, exists := newIps[cid]
+							if !exists {
+								ni = make([]string, 0)
 							}
+							ni = append(ni, ip)
+							newIps[cid] = ni
 						} else {
-							logrus.Debugf("Domain authorized, but IPSET not defined for container. domain=%s alternativeCname=%s container=%s ip=%s", domainName, alternativeCname, cid, ip)
+							logrus.Debugf("DNS query returned an IP that is already authorized in IPSET for container %s.", cid)
 						}
 
 					} else {
-						logrus.Debugf("Domain not authorized for container. Ignoring. domain=%s alternativeCname=%s container=%s", domainName, alternativeCname, cid)
+						logrus.Debugf("Domain not authorized for container. Ignoring. domain=%v container=%s", domainNames, cid)
 					}
 
 				}
+			}
 
-				//add any newly found ips to each container's ipset so that the iptables rules will be effective
-				for cid, ips := range newIps {
-					logrus.Debugf("Adding newly found ips to container ipset. container=%s ips=%v", cid, ips)
-					err = s.addIpsToContainerIpsetDst(cid, ips)
-					if err != nil {
-						logrus.Errorf("Error adding new IPs to container IPSET. containerID=%s ips=%v err=%s", cid, ips, err)
-					}
+			//add any newly found ips to each container's ipset so that the iptables rules will be effective
+			for cid, ips := range newIps {
+				logrus.Debugf("Adding newly found ips to container ipset. container=%s ips=%v", cid, ips)
+				err = s.addIpsToContainerIpsetDst(cid, ips)
+				if err != nil {
+					logrus.Errorf("Error adding new IPs to container IPSET. containerID=%s ips=%v err=%s", cid, ips, err)
 				}
 			}
 
@@ -494,8 +499,8 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 		logrus.Debugf("Received Docker event message %v", message)
 		if message.Type == "container" {
 			//IPSET GROUP UPDATE
-			ipsetName := osutils.Trunc(message.Actor.ID, 18)
-			ipsetName = ipsetName + "-dst"
+			containerID := osutils.Trunc(message.Actor.ID, 18)
+			ipsetName := containerID + "-dst"
 			if message.Action == "start" {
 
 				opts := types.ContainerListOptions{
@@ -520,6 +525,7 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 						logrus.Debugf("Container already known. Updating ipset outbound ips")
 						s.updateIpsetIps(ipsetName, container)
 					}
+					s.KnownContainers[containerID] = container
 					logrus.Infof("Ipset group %s updated", ipsetName)
 
 				} else {
@@ -532,6 +538,7 @@ func (s *Waller) processMessages(chanMessages <-chan events.Message) {
 				if err != nil {
 					logrus.Warnf("Error clearing ipset group %s", ipsetName)
 				}
+				delete(s.KnownContainers, containerID)
 				logrus.Infof("Ipset group %s cleared", ipsetName)
 			}
 

@@ -68,3 +68,5 @@ services:
 
    * If you don't specify DockerWall gateway networks, all bridge networks will be managed. It means that even the "docker build" task won't have access to the Internet because it uses the "bridge" network in order to have Internet access during build. You may set ENV "GATEWAY_NETWORKS=!bridge" in order to protect all but the "bridge" network, so that regular builds will work.
 
+   * For cases when a certain domain IP changes too often, Dockerwall listens to DNS queries and updates its authorized IPs on demand, but during this process, one or two packets may get dropped. As TCP resends connection packets, this would be transparent to applications.
+

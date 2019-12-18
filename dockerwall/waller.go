@@ -28,19 +28,20 @@ import (
 
 //Waller Label based network filter constraints
 type Waller struct {
-	DockerClient           *client.Client
-	UseDefaultNetworks     bool
-	GatewayNetworks        []string
-	DefaultOutbound        string
-	DryRun                 bool
-	SkipNetworks           []string
-	CurrentMetrics         string
-	MetricsDropHosts       map[string]map[string]int
-	M                      *sync.Mutex
-	gatewayUpdateScheduled bool
-	DNSKnownReverse        map[string]map[string]bool
-	ContainerIPSetIps      map[string]dsutils.TTLCollection
-	KnownContainers        map[string]types.Container
+	DockerClient              *client.Client
+	UseDefaultNetworks        bool
+	GatewayNetworks           []string
+	DefaultOutbound           string
+	DryRun                    bool
+	SkipNetworks              []string
+	CurrentMetrics            string
+	MetricsDropHosts          map[string]map[string]int
+	M                         *sync.Mutex
+	gatewayUpdateScheduled    bool
+	DNSKnownReverse           map[string]map[string]bool
+	ContainerIPSetIps         map[string]dsutils.TTLCollection
+	KnownContainers           map[string]types.Container
+	VerifiedAuthorizedDomains map[string]bool
 }
 
 func (s *Waller) Startup() error {
@@ -49,6 +50,7 @@ func (s *Waller) Startup() error {
 	s.MetricsDropHosts = make(map[string]map[string]int)
 	s.DNSKnownReverse = make(map[string]map[string]bool)
 	s.KnownContainers = make(map[string]types.Container)
+	s.VerifiedAuthorizedDomains = make(map[string]bool)
 
 	ipsetMap, err1 := ipsetMapFromCurrentIPSET()
 	if err1 != nil {
@@ -348,14 +350,14 @@ func (s *Waller) nflog() {
 
 			newIps := make(map[string][]string, 0)
 			// cnames := make(map[string]string)
-			domainNames := make(map[string]bool, 0)
+			candidateDomainNames := make(map[string]bool, 0)
 			for _, ans := range dns.Answers {
 				domainName := string(ans.Name)
-				domainNames[domainName] = true
+				candidateDomainNames[domainName] = true
 				if ans.Type == layers.DNSTypeCNAME {
 					cname := string(ans.CNAME)
 					// cnames[domainName] = d2
-					domainNames[cname] = true
+					candidateDomainNames[cname] = true
 					logrus.Debugf("DNS CNAME %s -> %s", domainName, cname)
 					continue
 				}
@@ -383,19 +385,54 @@ func (s *Waller) nflog() {
 					//check if this domain name is authorized
 					outboundDomainNames := getContainerOutboundDomainNames(container)
 					domainAuthorized := false
-					r1e, _ := regexp.Compile("[A-Za-z0-9\\.]+")
+					r1e, _ := regexp.Compile("[A-Za-z0-9\\.\\*]+")
 					// r2e, _ := regexp.Compile("([a-zA-Z0-9]+)\\.*")
 					authorizedDomains := r1e.FindAllStringSubmatch(outboundDomainNames, -1)
+					logrus.Debugf("outboundDomainNames=%s authorizedDomains=%v", outboundDomainNames, authorizedDomains)
 					for _, ad := range authorizedDomains {
 						for _, d := range ad {
 							//check if returned domain in DNS query is explicity set in outbound domains from container labels
-							authDomain := strings.ToLower(d)
-							_, exists := domainNames[authDomain]
-							logrus.Debugf("AUTH DOMAIN authDomain=%s domainNames=%v exists=%s\n", authDomain, domainNames, exists)
-							if exists {
-								domainAuthorized = true
-								break
+							authorizedDomain := strings.ToLower(d)
+
+							ok := isDomainAuthorizationVerified(s.VerifiedAuthorizedDomains, authorizedDomain)
+
+							if ok {
+								isWildcard := strings.Contains(authorizedDomain, "*")
+
+								if !isWildcard {
+									_, domainExists := candidateDomainNames[authorizedDomain]
+									logrus.Debugf("Directly authorized domain check authorizedDomain=%s candidateDomainNames=%v exists=%s\n", authorizedDomain, candidateDomainNames, domainExists)
+									if domainExists {
+										domainAuthorized = true
+										break
+									}
+
+								} else {
+									logrus.Debugf("Wildcard domain authorization check authorizedDomain=%s candidateDomainNames=%v\n", authorizedDomain, candidateDomainNames)
+									raw, _ := regexp.Compile("\\*\\.(.*)")
+									authSufix := raw.FindAllStringSubmatch(authorizedDomain, -1)
+									logrus.Debugf("authSufix=%v", authSufix)
+									if len(authSufix) > 0 {
+										for candidateDomainName := range candidateDomainNames {
+											authDomainSufix := authSufix[0][1]
+											logrus.Debugf("Check domain authorization by wildcard. candidateDomainName=%s authDomainSufix=%s\n", candidateDomainName, authDomainSufix)
+											if strings.LastIndex(candidateDomainName, authDomainSufix) == (len(candidateDomainName) - len(authDomainSufix)) {
+												logrus.Debugf("Domain authorized by wildcard auth. candidateDomainName=%s authDomainSufix=%s\n", candidateDomainName, authDomainSufix)
+												domainAuthorized = true
+												break
+											}
+										}
+									}
+								}
+
+								if domainAuthorized {
+									break
+								}
+
+							} else {
+								logrus.Debugf("Domain authorization not valid. authorizedDomain=%s", authorizedDomain)
 							}
+
 						}
 						if domainAuthorized {
 							break
@@ -421,7 +458,7 @@ func (s *Waller) nflog() {
 							}
 						}
 						if !ipFound {
-							logrus.Debugf("Domain authorized, but IP is not in IPSET yet. Adding it. domain=%v ip=%s", domainNames, ip)
+							logrus.Debugf("Domain authorized, but IP is not in IPSET yet. Adding it. candidateDomainNames=%v ip=%s", candidateDomainNames, ip)
 							ni, exists := newIps[cid]
 							if !exists {
 								ni = make([]string, 0)
@@ -433,7 +470,7 @@ func (s *Waller) nflog() {
 						}
 
 					} else {
-						logrus.Debugf("Domain not authorized for container. Ignoring. domain=%v container=%s", domainNames, cid)
+						logrus.Debugf("Domain not authorized for container. Ignoring. candidateDomainNames=%v container=%s", candidateDomainNames, cid)
 					}
 
 				}

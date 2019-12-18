@@ -71,3 +71,39 @@ func addIPToIpsetMap(ipsetMap map[string]dsutils.TTLCollection, containerID stri
 	}
 	ipsetMap[containerID] = m
 }
+
+//verify if domain authorization found in container labels is OK (domain exists as wildcard)
+func isDomainAuthorizationVerified(verifiedAuthorizedDomains map[string]bool, authorizedDomain string) bool {
+	// logrus.Debugf("Validate if authorized domain is OK. authorizedDomain=%s", authorizedDomain)
+	domainValid, exists := verifiedAuthorizedDomains[authorizedDomain]
+	if exists {
+		return domainValid
+	}
+
+	logrus.Debugf("Checking domain authorization validity. authorizedDomain=%s", authorizedDomain)
+	domainValid = false
+
+	//domain contains wildcard
+	if strings.Contains(authorizedDomain, "*") {
+		wre, _ := regexp.Compile("^\\*\\.+(.*)")
+		verifiedDomain := wre.FindAllStringSubmatch(authorizedDomain, -1)
+		if len(verifiedDomain) > 0 {
+			baseDomain := verifiedDomain[0][1]
+
+			_, err := osutils.ExecShellf("nslookup %s", baseDomain)
+			if err == nil {
+				logrus.Debugf("Wildcard domain is valid. authorizedDomain=%s baseDomain=%s", authorizedDomain, baseDomain)
+				domainValid = true
+			} else {
+				logrus.Warnf("Wildcard domain is not valid. authorizedDomain=%s", authorizedDomain)
+			}
+		}
+
+		//domain is direct
+	} else {
+		domainValid = true
+	}
+
+	verifiedAuthorizedDomains[authorizedDomain] = domainValid
+	return domainValid
+}

@@ -5,9 +5,9 @@ Run DockerWall container on all hosts you want to limit access of running contai
 
 By default all containers are denied access to any host, except those in docker networks that it is directly attached.
 
-Simply add label "dockerwall.outbound=www.yahoo.com" to the container that will be allowed access to www.yahoo.com. DockerWall will configure hosts's IPTables chains/rules to ACCEPT those packets and DROP the others.
+Simply add label "dockerwall.outbound=www.yahoo.com" to the container that will be allowed access to www.yahoo.com. DockerWall will configure hosts's IPTables chains/rules to ACCEPT those packets and DROP the others. Wildcard rules are accepted too. Example: "dockerwall.outbound=*.yahoo.com,*.google.com,www.uol.com.br"
 
-DockerWall will automatically update the IPs related to domain names periodically.
+Dockerwall will automatically update the IPs related to domain names periodically.
 
 Tested with standalone containers, docker-compose and Swarm Clusters.
 

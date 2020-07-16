@@ -1,4 +1,7 @@
 # dockerwall
+
+[<img src="https://img.shields.io/docker/automated/flaviostutz/dockerwall"/>](https://hub.docker.com/r/flaviostutz/dockerwall)
+
 A packet filter for communications from Docker containers to its default gateway. Configurable by labels.
 
 Run DockerWall container on all hosts you want to limit access of running containers to the Internet, so that even if those containers gets compromised, they will have limited network access to the Internet or to your internal network.

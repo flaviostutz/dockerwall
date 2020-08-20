@@ -1,6 +1,7 @@
 # dockerwall
 
-[<img src="https://img.shields.io/docker/automated/flaviostutz/dockerwall"/>](https://hub.docker.com/r/flaviostutz/dockerwall)
+[<img src="https://img.shields.io/docker/automated/flaviostutz/dockerwall"/>](https://hub.docker.com/r/flaviostutz/dockerwall)<br/>
+[<img src="https://goreportcard.com/badge/github.com/flaviostutz/dockerwall"/>](https://goreportcard.com/report/github.com/flaviostutz/dockerwall)
 
 A packet filter for communications from Docker containers to its default gateway. Configurable by labels.
 
